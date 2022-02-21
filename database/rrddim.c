@@ -217,6 +217,7 @@ void rrdcalc_link_to_rrddim(RRDDIM *rd, RRDSET *st, RRDHOST *host) {
 RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collected_number multiplier,
                           collected_number divisor, RRD_ALGORITHM algorithm, RRD_MEMORY_MODE memory_mode)
 {
+    info("rrddim_add_custom %s %s %s", id, name, rrd_memory_mode_name(memory_mode));
     RRDHOST *host = st->rrdhost;
     rrdset_wrlock(st);
 
@@ -256,6 +257,7 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     unsigned long size = sizeof(RRDDIM) + (st->entries * sizeof(storage_number));
 
     debug(D_RRD_CALLS, "Adding dimension '%s/%s'.", st->id, id);
+    info("Adding dimension '%s/%s'.", st->id, id);
 
     rrdset_strncpyz_name(filename, id, FILENAME_MAX);
     snprintfz(fullfilename, FILENAME_MAX, "%s/%s.db", st->cache_dir, filename);
@@ -338,6 +340,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
         rd = callocz(1, size);
         if (memory_mode == RRD_MEMORY_MODE_DBENGINE)
             rd->rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
+        else if (memory_mode == RRD_MEMORY_MODE_MONGODB)
+            rd->rrd_memory_mode = RRD_MEMORY_MODE_MONGODB;
         else
             rd->rrd_memory_mode = (memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_ALLOC;
     }
@@ -391,6 +395,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rd->state->aclk_live_status = -1;
 #endif
     (void) find_dimension_uuid(st, rd, &(rd->state->metric_uuid));
+    info("Set dimension ptr '%s/%s' %s %d.", st->id, id, rd->name, memory_mode);
+
     if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
 #ifdef ENABLE_DBENGINE
         rrdeng_metric_init(rd);
@@ -403,6 +409,19 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
         rd->state->query_ops.finalize = rrdeng_load_metric_finalize;
         rd->state->query_ops.latest_time = rrdeng_metric_latest_time;
         rd->state->query_ops.oldest_time = rrdeng_metric_oldest_time;
+#endif
+    } else if (memory_mode == RRD_MEMORY_MODE_MONGODB) {
+#ifdef ENABLE_ENGINE_MONGODB
+        mongoeng_metric_init(rd);
+        rd->state->collect_ops.init = mongoeng_store_metric_init;
+        rd->state->collect_ops.store_metric = mongoeng_store_metric_next;
+        rd->state->collect_ops.finalize = mongoeng_store_metric_finalize;
+        rd->state->query_ops.init = mongoeng_load_metric_init;
+        rd->state->query_ops.next_metric = mongoeng_load_metric_next;
+        rd->state->query_ops.is_finished = mongoeng_load_metric_is_finished;
+        rd->state->query_ops.finalize = mongoeng_load_metric_finalize;
+        rd->state->query_ops.latest_time = mongoeng_metric_latest_time;
+        rd->state->query_ops.oldest_time = mongoeng_metric_oldest_time;
 #endif
     } else {
         rd->state->collect_ops.init         = rrddim_collect_init;

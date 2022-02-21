@@ -511,6 +511,7 @@ RRDSET *rrdset_create_custom(
         , RRD_MEMORY_MODE memory_mode
         , long history_entries
 ) {
+    error("rrdset_create_custom %s %s %s", id, name, rrd_memory_mode_name(memory_mode));
     if(!type || !type[0]) {
         fatal("Cannot create rrd stats without a type: id '%s', name '%s', family '%s', context '%s', title '%s', units '%s', plugin '%s', module '%s'."
               , (id && *id)?id:"<unset>"
@@ -817,6 +818,8 @@ RRDSET *rrdset_create_custom(
         st = callocz(1, size);
         if (memory_mode == RRD_MEMORY_MODE_DBENGINE)
             st->rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
+        else if (memory_mode == RRD_MEMORY_MODE_MONGODB)
+            st->rrd_memory_mode = RRD_MEMORY_MODE_MONGODB;
         else
             st->rrd_memory_mode = (memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_ALLOC;
     }

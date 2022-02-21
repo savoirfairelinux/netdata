@@ -28,6 +28,10 @@ struct rrdeng_page_descr;
 struct rrdengine_instance;
 struct pg_cache_page_index;
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+struct mongoc_collection_t;
+struct bson_t;
+#endif
 
 #include "daemon/common.h"
 #include "web/api/queries/query.h"
@@ -104,7 +108,8 @@ typedef enum rrd_memory_mode {
     RRD_MEMORY_MODE_MAP  = 2,
     RRD_MEMORY_MODE_SAVE = 3,
     RRD_MEMORY_MODE_ALLOC = 4,
-    RRD_MEMORY_MODE_DBENGINE = 5
+    RRD_MEMORY_MODE_DBENGINE = 5,
+    RRD_MEMORY_MODE_MONGODB = 6
 } RRD_MEMORY_MODE;
 
 #define RRD_MEMORY_MODE_NONE_NAME "none"
@@ -113,6 +118,7 @@ typedef enum rrd_memory_mode {
 #define RRD_MEMORY_MODE_SAVE_NAME "save"
 #define RRD_MEMORY_MODE_ALLOC_NAME "alloc"
 #define RRD_MEMORY_MODE_DBENGINE_NAME "dbengine"
+#define RRD_MEMORY_MODE_MONGODB_NAME "mongodb"
 
 extern RRD_MEMORY_MODE default_rrd_memory_mode;
 
@@ -345,6 +351,17 @@ union rrddim_collect_handle {
         uint8_t unaligned_page;
     } rrdeng; // state the database engine uses
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+    struct mongoeng_collect_handle {
+        struct mongoeng_page_descr *descr, *prev_descr;
+        unsigned long page_correlation_id;
+        struct mongoengine_instance *ctx;
+        struct mongoc_collection_t *collection;
+        // set to 1 when this dimension is not page aligned with the other dimensions in the chart
+        uint8_t unaligned_page;
+        struct bson_t* page;
+    } mongoeng; // state the database engine uses
+#endif
 };
 
 // ----------------------------------------------------------------------------
@@ -355,6 +372,17 @@ struct rrdeng_query_handle {
     struct rrdeng_page_descr *descr;
     struct rrdengine_instance *ctx;
     struct pg_cache_page_index *page_index;
+    time_t next_page_time;
+    time_t now;
+    unsigned position;
+};
+#endif
+
+#ifdef ENABLE_ENGINE_MONGODB
+struct mongoeng_query_handle {
+    //struct rrdeng_page_descr *descr;
+    struct mongoengine_instance *ctx;
+    //struct pg_cache_page_index *page_index;
     time_t next_page_time;
     time_t now;
     unsigned position;
@@ -373,6 +401,9 @@ struct rrddim_query_handle {
         } slotted;                         // state the legacy code uses
 #ifdef ENABLE_DBENGINE
         struct rrdeng_query_handle rrdeng; // state the database engine uses
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+        struct mongoeng_query_handle mongoeng; // state the database engine uses
 #endif
     };
 };
@@ -788,7 +819,7 @@ struct rrdhost {
 
     int rrd_update_every;                           // the update frequency of the host
     long rrd_history_entries;                       // the number of history entries for the host's charts
-    RRD_MEMORY_MODE rrd_memory_mode;                // the memory more for the charts of this host
+    RRD_MEMORY_MODE rrd_memory_mode;                // the memory mode for the charts of this host
 
     char *cache_dir;                                // the directory to save RRD cache files
     char *varlib_dir;                               // the directory to save health log
@@ -902,6 +933,9 @@ struct rrdhost {
 
 #ifdef ENABLE_DBENGINE
     struct rrdengine_instance *rrdeng_ctx;          // DB engine instance for this host
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+    struct mongoengine_instance *mongoeng_ctx;      // Mongo engine instance for this host
 #endif
     uuid_t  host_uuid;                              // Global GUID for this host
     uuid_t  *node_id;                               // Cloud node_id
@@ -1371,6 +1405,9 @@ extern void set_host_properties(
 
 #ifdef ENABLE_DBENGINE
 #include "database/engine/rrdengineapi.h"
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+#include "database/mongodb/dbengineapi.h"
 #endif
 #include "sqlite/sqlite_functions.h"
 #include "sqlite/sqlite_aclk.h"

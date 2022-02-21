@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #endif
 #include "../rrdengine.h"
+#include "../../mongodb/dbengine.h"
 #include "metadatalogprotocol.h"
 #include "logfile.h"
 #include "metadatalogapi.h"
@@ -21,6 +22,7 @@ struct parser_user_object;
 
 struct metalog_instance {
     struct rrdengine_instance *rrdeng_ctx;
+    struct mongoengine_instance *mongoeng_ctx;
     struct parser_user_object *metalog_parser_object;
     uint8_t initialized; /* set to 1 to mark context initialized */
 };

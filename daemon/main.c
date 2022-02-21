@@ -57,9 +57,15 @@ void netdata_cleanup_and_exit(int ret) {
 #ifdef ENABLE_DBENGINE
         rrdeng_prepare_exit(&multidb_ctx);
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+        mongoeng_prepare_exit(&mongodb_ctx);
+#endif
         rrdhost_free_all();
 #ifdef ENABLE_DBENGINE
         rrdeng_exit(&multidb_ctx);
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+        mongoeng_exit(&mongodb_ctx);
 #endif
     }
     sql_close_database();

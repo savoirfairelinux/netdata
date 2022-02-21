@@ -953,7 +953,7 @@ int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_p
     if (ctx->worker_config.error) {
         goto error_after_rrdeng_worker;
     }
-    error = metalog_init(ctx);
+    error = metalog_init(ctx, NULL);
     if (error) {
         error("Failed to initialize metadata log file event loop.");
         goto error_after_rrdeng_worker;

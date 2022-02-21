@@ -583,6 +583,7 @@ unsigned long error_log_errors_per_period = 200;
 unsigned long error_log_errors_per_period_backup = 0;
 
 int error_log_limit(int reset) {
+	return 0;
     static time_t start = 0;
     static unsigned long counter = 0, prevented = 0;
 
