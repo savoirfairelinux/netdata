@@ -2,6 +2,7 @@
 
 #define NETDATA_RRD_INTERNALS
 #include "rrd.h"
+#include "storage_engine.h"
 
 RRDHOST *localhost = NULL;
 size_t rrd_hosts_available = 0;
@@ -331,40 +332,19 @@ RRDHOST *rrdhost_create(const char *hostname,
     else
         error_report("Host machine GUID %s is not valid", host->machine_guid);
 
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-#ifdef ENABLE_DBENGINE
-        char dbenginepath[FILENAME_MAX + 1];
-        int ret;
+    STORAGE_ENGINE* eng = get_engine(host->rrd_memory_mode);
 
-        snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", host->cache_dir);
-        ret = mkdir(dbenginepath, 0775);
-        if (ret != 0 && errno != EEXIST)
-            error("Host '%s': cannot create directory '%s'", host->hostname, dbenginepath);
-        else ret = 0; // succeed
-        if (is_legacy) // initialize legacy dbengine instance as needed
-            ret = rrdeng_init(host, &host->rrdeng_ctx, dbenginepath, default_rrdeng_page_cache_mb,
-                              default_rrdeng_disk_quota_mb); // may fail here for legacy dbengine initialization
-        else
-            host->rrdeng_ctx = &multidb_ctx;
-        if (ret) { // check legacy or multihost initialization success
-            error(
-                "Host '%s': cannot initialize host with machine guid '%s'. Failed to initialize DB engine at '%s'.",
-                host->hostname, host->machine_guid, host->cache_dir);
-            rrdhost_free(host);
-            host = NULL;
-            //rrd_hosts_available++; //TODO: maybe we want this?
-
-            return host;
-        }
-
-#else
-        fatal("RRD_MEMORY_MODE_DBENGINE is not supported in this platform.");
-#endif
-    }
-    else {
-#ifdef ENABLE_DBENGINE
-        host->rrdeng_ctx = &multidb_ctx;
-#endif
+    bool instance_per_host = eng && eng->api.init && (is_legacy || eng->instance_per_host);
+    if (instance_per_host) {
+        host->rrdeng_ctx = eng->api.init(host);
+        host->rrdeng_ctx->engine = eng;
+    } else {
+         if (multidb_ctx == NULL && eng && eng->api.init) {
+             multidb_ctx = eng->api.init(host);
+         }
+         host->rrdeng_ctx = multidb_ctx;
+         if (host->rrdeng_ctx)
+            host->rrdeng_ctx->engine = eng;
     }
 
     // ------------------------------------------------------------------------
@@ -669,7 +649,7 @@ restart_after_removal:
             if (rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST)
 #ifdef ENABLE_DBENGINE
                 /* don't delete multi-host DB host files */
-                && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == &multidb_ctx)
+                && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == multidb_ctx)
 #endif
             )
                 rrdhost_delete_charts(host);
@@ -737,25 +717,35 @@ int rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
         return 1;
     }
 
-#ifdef ENABLE_DBENGINE
-    char dbenginepath[FILENAME_MAX + 1];
-    int ret;
-    snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", localhost->cache_dir);
-    ret = mkdir(dbenginepath, 0775);
-    if (ret != 0 && errno != EEXIST)
-        error("Host '%s': cannot create directory '%s'", localhost->hostname, dbenginepath);
-    else  // Unconditionally create multihost db to support on demand host creation
-        ret = rrdeng_init(NULL, NULL, dbenginepath, default_rrdeng_page_cache_mb, default_multidb_disk_quota_mb);
-    if (ret) {
-        error(
-            "Host '%s' with machine guid '%s' failed to initialize multi-host DB engine instance at '%s'.",
-            localhost->hostname, localhost->machine_guid, localhost->cache_dir);
-        rrdhost_free(localhost);
-        localhost = NULL;
-        rrd_unlock();
-        fatal("Failed to initialize dbengine");
+
+    STORAGE_ENGINE* eng = get_engine(default_rrd_memory_mode);
+    if (!eng || eng->instance_per_host) {
+        // Fallback to DBENGINE if default memory mode doesn't support multidb
+        eng = get_engine(RRD_MEMORY_MODE_DBENGINE);
     }
-#endif
+    if (eng && !eng->instance_per_host) {
+        char dbenginepath[FILENAME_MAX + 1];
+        int ret;
+        snprintfz(dbenginepath, FILENAME_MAX, "%s/dbengine", localhost->cache_dir);
+        ret = mkdir(dbenginepath, 0775);
+        if (ret != 0 && errno != EEXIST)
+            error("Host '%s': cannot create directory '%s'", localhost->hostname, dbenginepath);
+        else { // Unconditionally create multihost db to support on demand host creation
+            multidb_ctx = eng->api.init(localhost);
+            ret = multidb_ctx == NULL;
+            //ret = rrdeng_init(NULL, NULL, dbenginepath, default_rrdeng_page_cache_mb, default_multidb_disk_quota_mb);
+        }
+        if (ret) {
+            error(
+                "Host '%s' with machine guid '%s' failed to initialize multi-host DB engine instance at '%s'.",
+                localhost->hostname, localhost->machine_guid, localhost->cache_dir);
+            rrdhost_free(localhost);
+            localhost = NULL;
+            rrd_unlock();
+            fatal("Failed to initialize dbengine");
+        }
+    }
+
     sql_aclk_sync_init();
     rrd_unlock();
 
@@ -893,12 +883,12 @@ void rrdhost_free(RRDHOST *host) {
     // ------------------------------------------------------------------------
     // release its children resources
 
-#ifdef ENABLE_DBENGINE
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-        if (host->rrdeng_ctx != &multidb_ctx)
-            rrdeng_prepare_exit(host->rrdeng_ctx);
+    if (host->rrdeng_ctx != multidb_ctx) {
+        STORAGE_ENGINE* eng = host->rrdeng_ctx->engine;
+        if (eng && eng->api.exit)
+            eng->api.exit(host->rrdeng_ctx);
     }
-#endif
+
     while(host->rrdset_root)
         rrdset_free(host->rrdset_root);
 
@@ -929,10 +919,11 @@ void rrdhost_free(RRDHOST *host) {
 
     health_alarm_log_free(host);
 
-#ifdef ENABLE_DBENGINE
-    if (host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx != &multidb_ctx)
-        rrdeng_exit(host->rrdeng_ctx);
-#endif
+    if (host->rrdeng_ctx != multidb_ctx) {
+        STORAGE_ENGINE* eng = host->rrdeng_ctx->engine;
+        if (eng && eng->api.exit)
+            eng->api.destroy(host->rrdeng_ctx);
+    }
 
     ml_delete_host(host);
 
@@ -1446,7 +1437,7 @@ void rrdhost_cleanup_all(void) {
         if (host != localhost && rrdhost_flag_check(host, RRDHOST_FLAG_DELETE_ORPHAN_HOST) && !host->receiver
 #ifdef ENABLE_DBENGINE
             /* don't delete multi-host DB host files */
-            && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == &multidb_ctx)
+            && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && host->rrdeng_ctx == multidb_ctx)
 #endif
         )
             rrdhost_delete_charts(host);
@@ -1531,7 +1522,7 @@ restart_after_removal:
                 rrdvar_free_remaining_variables(host, &st->rrdvar_root_index);
 
                 rrdset_flag_clear(st, RRDSET_FLAG_OBSOLETE);
-                
+
                 if (st->dimensions) {
                     /* If the chart still has dimensions don't delete it from the metadata log */
                     continue;

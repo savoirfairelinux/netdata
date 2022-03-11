@@ -14,6 +14,7 @@ typedef struct rrdcalc RRDCALC;
 typedef struct rrdcalctemplate RRDCALCTEMPLATE;
 typedef struct alarm_entry ALARM_ENTRY;
 typedef struct context_param CONTEXT_PARAM;
+typedef struct storage_engine_instance STORAGE_ENGINE_INSTANCE;
 
 typedef void *ml_host_t;
 typedef void *ml_dimension_t;
@@ -328,52 +329,16 @@ struct rrddim {
     storage_number values[];                        // the array of values - THIS HAS TO BE THE LAST MEMBER
 };
 
-// ----------------------------------------------------------------------------
-// iterator state for RRD dimension data collection
-union rrddim_collect_handle {
-    struct {
-        long slot;
-        long entries;
-    } slotted;                           // state the legacy code uses
-#ifdef ENABLE_DBENGINE
-    struct rrdeng_collect_handle {
-        struct rrdeng_page_descr *descr, *prev_descr;
-        unsigned long page_correlation_id;
-        struct rrdengine_instance *ctx;
-        // set to 1 when this dimension is not page aligned with the other dimensions in the chart
-        uint8_t unaligned_page;
-    } rrdeng; // state the database engine uses
-#endif
-};
+typedef struct storage_collect_handle STORAGE_COLLECT_HANDLE;
+typedef struct storage_query_handle STORAGE_QUERY_HANDLE;
 
 // ----------------------------------------------------------------------------
 // iterator state for RRD dimension data queries
-
-#ifdef ENABLE_DBENGINE
-struct rrdeng_query_handle {
-    struct rrdeng_page_descr *descr;
-    struct rrdengine_instance *ctx;
-    struct pg_cache_page_index *page_index;
-    time_t next_page_time;
-    time_t now;
-    unsigned position;
-};
-#endif
-
 struct rrddim_query_handle {
     RRDDIM *rd;
     time_t start_time;
     time_t end_time;
-    union {
-        struct {
-            long slot;
-            long last_slot;
-            uint8_t finished;
-        } slotted;                         // state the legacy code uses
-#ifdef ENABLE_DBENGINE
-        struct rrdeng_query_handle rrdeng; // state the database engine uses
-#endif
-    };
+    STORAGE_QUERY_HANDLE* handle;
 };
 
 // ------------------------------------------------------------------------
@@ -422,7 +387,7 @@ struct rrddim_volatile {
     int aclk_live_status;
 #endif
     uuid_t metric_uuid;                 // global UUID for this metric (unique_across hosts)
-    union rrddim_collect_handle handle;
+    STORAGE_COLLECT_HANDLE* handle;
     struct rrddim_collect_ops collect_ops;
     struct rrddim_query_ops query_ops;
     ml_dimension_t ml_dimension;
@@ -904,9 +869,7 @@ struct rrdhost {
     avl_tree_lock rrdfamily_root_index;             // the host's chart families index
     avl_tree_lock rrdvar_root_index;                // the host's chart variables index
 
-#ifdef ENABLE_DBENGINE
-    struct rrdengine_instance *rrdeng_ctx;          // DB engine instance for this host
-#endif
+    STORAGE_ENGINE_INSTANCE *rrdeng_ctx;          // DB engine instance for this host
     uuid_t  host_uuid;                              // Global GUID for this host
     uuid_t  *node_id;                               // Cloud node_id
 
@@ -1373,9 +1336,6 @@ extern void set_host_properties(
 // ----------------------------------------------------------------------------
 // RRD DB engine declarations
 
-#ifdef ENABLE_DBENGINE
-#include "database/engine/rrdengineapi.h"
-#endif
 #include "sqlite/sqlite_functions.h"
 #include "sqlite/sqlite_aclk.h"
 #include "sqlite/sqlite_aclk_chart.h"
