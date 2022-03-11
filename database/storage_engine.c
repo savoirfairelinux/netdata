@@ -140,6 +140,35 @@ STORAGE_ENGINE engines[] = {
         },
         .instance_per_host = true
     },
+#ifdef ENABLE_DBENGINE
+    {
+        .id = RRD_MEMORY_MODE_DBENGINE,
+        .name = RRD_MEMORY_MODE_DBENGINE_NAME,
+        .api = {
+            .init = rrdeng_init,
+            .exit = rrdeng_prepare_exit,
+            .destroy = rrdeng_exit,
+            .set_init = rrdset_init_DBENGINE,
+            .set_destroy = dimension_destroy_freez,
+            .dimension_init = rrdeng_metric_init,
+            .dimension_destroy = dimension_destroy_freez,
+            .collect_ops = {
+                .init = rrdeng_store_metric_init,
+                .store_metric = rrdeng_store_metric_next,
+                .finalize = rrdeng_store_metric_finalize
+            },
+            .query_ops = {
+                .init = rrdeng_load_metric_init,
+                .next_metric = rrdeng_load_metric_next,
+                .is_finished = rrdeng_load_metric_is_finished,
+                .finalize = rrdeng_load_metric_finalize,
+                .latest_time = rrdeng_metric_latest_time,
+                .oldest_time = rrdeng_metric_oldest_time
+            }
+        },
+        .instance_per_host = false
+    },
+#endif
     { .id = RRD_MEMORY_MODE_NONE, .name = NULL }
 };
 

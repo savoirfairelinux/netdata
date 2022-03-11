@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rrdengine.h"
-
-/* Default global database instance */
-struct rrdengine_instance multidb_ctx;
+#include "../storage_engine.h"
 
 int default_rrdeng_page_cache_mb = 32;
 int default_rrdeng_disk_quota_mb = 256;
@@ -12,7 +10,7 @@ uint8_t rrdeng_drop_metrics_under_page_cache_pressure = 1;
 
 static inline struct rrdengine_instance *get_rrdeng_ctx_from_host(RRDHOST *host)
 {
-    return host->rrdeng_ctx;
+    return (struct rrdengine_instance*) host->rrdeng_ctx;
 }
 
 /* This UUID is not unique across hosts */
@@ -49,7 +47,7 @@ void rrdeng_convert_legacy_uuid_to_multihost(char machine_guid[GUID_LEN + 1], uu
     memcpy(ret_uuid, hash_value, sizeof(uuid_t));
 }
 
-void rrdeng_metric_init(RRDDIM *rd)
+RRDDIM* rrdeng_metric_init(RRDSET *rrdset, const char *id, const char *filename)
 {
     struct page_cache *pg_cache;
     struct rrdengine_instance *ctx;
@@ -58,17 +56,22 @@ void rrdeng_metric_init(RRDDIM *rd)
     Pvoid_t *PValue;
     struct pg_cache_page_index *page_index = NULL;
     int is_multihost_child = 0;
-    RRDHOST *host = rd->rrdset->rrdhost;
+    RRDHOST *host = rrdset->rrdhost;
 
-    ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
+    ctx = get_rrdeng_ctx_from_host(rrdset->rrdhost);
     if (unlikely(!ctx)) {
-        error("Failed to fetch multidb context");
-        return;
+        error("Failed to fetch context");
+        return NULL;
     }
+    unsigned long size = sizeof(RRDDIM) + (rrdset->entries * sizeof(storage_number));
+    RRDDIM* rd = callocz(1, size);
+    rd->id = strdupz(id);
+    rd->memsize = size;
+    rd->state = callocz(1, sizeof(*rd->state));
     pg_cache = &ctx->pg_cache;
 
-    rrdeng_generate_legacy_uuid(rd->id, rd->rrdset->id, &legacy_uuid);
-    if (host != localhost && host->rrdeng_ctx == &multidb_ctx)
+    rrdeng_generate_legacy_uuid(rd->id, rrdset->id, &legacy_uuid);
+    if (host != localhost && host->rrdeng_ctx == multidb_ctx)
         is_multihost_child = 1;
 
     uv_rwlock_rdlock(&pg_cache->metrics_index.lock);
@@ -99,7 +102,7 @@ void rrdeng_metric_init(RRDDIM *rd)
     } else {
         /* There are legacy UUIDs in the database, implement backward compatibility */
 
-        rrdeng_convert_legacy_uuid_to_multihost(rd->rrdset->rrdhost->machine_guid, &legacy_uuid,
+        rrdeng_convert_legacy_uuid_to_multihost(rrdset->rrdhost->machine_guid, &legacy_uuid,
                                                 &multihost_legacy_uuid);
 
         int need_to_store = uuid_compare(rd->state->metric_uuid, multihost_legacy_uuid);
@@ -107,12 +110,14 @@ void rrdeng_metric_init(RRDDIM *rd)
         uuid_copy(rd->state->metric_uuid, multihost_legacy_uuid);
 
         if (unlikely(need_to_store))
-            (void)sql_store_dimension(&rd->state->metric_uuid, rd->rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor,
+            (void)sql_store_dimension(&rd->state->metric_uuid, rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor,
                 rd->algorithm);
 
     }
     rd->state->rrdeng_uuid = &page_index->id;
     rd->state->page_index = page_index;
+    rd->rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
+    return rd;
 }
 
 /*
@@ -126,7 +131,9 @@ void rrdeng_store_metric_init(RRDDIM *rd)
     struct pg_cache_page_index *page_index;
 
     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
-    handle = &rd->state->handle.rrdeng;
+
+    handle = callocz(1, sizeof(struct rrdeng_collect_handle));
+    rd->state->handle = handle;
     handle->ctx = ctx;
 
     handle->descr = NULL;
@@ -162,7 +169,7 @@ void rrdeng_store_metric_flush_current_page(RRDDIM *rd)
     struct rrdengine_instance *ctx;
     struct rrdeng_page_descr *descr;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     if (unlikely(!ctx))
         return;
@@ -218,7 +225,7 @@ void rrdeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number n
     storage_number *page;
     uint8_t must_flush_unaligned_page = 0, perfect_page_alignment = 0;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     pg_cache = &ctx->pg_cache;
     descr = handle->descr;
@@ -301,7 +308,7 @@ int rrdeng_store_metric_finalize(RRDDIM *rd)
     struct pg_cache_page_index *page_index;
     uint8_t can_delete_metric = 0;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     page_index = rd->state->page_index;
     rrdeng_store_metric_flush_current_page(rd);
@@ -314,6 +321,7 @@ int rrdeng_store_metric_finalize(RRDDIM *rd)
         can_delete_metric = 1;
     }
     uv_rwlock_wrunlock(&page_index->lock);
+    freez(handle);
 
    return can_delete_metric;
 }
@@ -535,12 +543,14 @@ void rrdeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_hand
     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
     rrdimm_handle->start_time = start_time;
     rrdimm_handle->end_time = end_time;
-    handle = &rrdimm_handle->rrdeng;
+
+    handle = calloc(1, sizeof(struct rrdeng_query_handle));
     handle->next_page_time = start_time;
     handle->now = start_time;
     handle->position = 0;
     handle->ctx = ctx;
     handle->descr = NULL;
+    rrdimm_handle->handle = handle;
     pages_nr = pg_cache_preload(ctx, rd->state->rrdeng_uuid, start_time * USEC_PER_SEC, end_time * USEC_PER_SEC,
                                 NULL, &handle->page_index);
     if (unlikely(NULL == handle->page_index || 0 == pages_nr))
@@ -559,7 +569,7 @@ storage_number rrdeng_load_metric_next(struct rrddim_query_handle *rrdimm_handle
     usec_t next_page_time = 0, current_position_time, page_end_time = 0;
     uint32_t page_length;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     if (unlikely(INVALID_TIME == handle->next_page_time)) {
         return SN_EMPTY_SLOT;
     }
@@ -643,7 +653,7 @@ int rrdeng_load_metric_is_finished(struct rrddim_query_handle *rrdimm_handle)
 {
     struct rrdeng_query_handle *handle;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     return (INVALID_TIME == handle->next_page_time);
 }
 
@@ -656,7 +666,7 @@ void rrdeng_load_metric_finalize(struct rrddim_query_handle *rrdimm_handle)
     struct rrdengine_instance *ctx;
     struct rrdeng_page_descr *descr;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     ctx = handle->ctx;
     descr = handle->descr;
     if (descr) {
@@ -883,11 +893,9 @@ void rrdeng_put_page(struct rrdengine_instance *ctx, void *handle)
     pg_cache_put(ctx, (struct rrdeng_page_descr *)handle);
 }
 
-/*
- * Returns 0 on success, negative on error
- */
-int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_path, unsigned page_cache_mb,
-                unsigned disk_space_mb)
+
+STORAGE_ENGINE_INSTANCE*
+rrdeng_init(RRDHOST *host)
 {
     struct rrdengine_instance *ctx;
     int error;
@@ -904,15 +912,18 @@ int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_p
 
         rrd_stat_atomic_add(&global_fs_errors, 1);
         rrd_stat_atomic_add(&rrdeng_reserved_file_descriptors, -RRDENG_FD_BUDGET_PER_INSTANCE);
-        return UV_EMFILE;
+        return NULL;//UV_EMFILE;
     }
+    char dbfiles_path[FILENAME_MAX + 1];
+    int ret;
 
-    if (NULL == ctxp) {
-        ctx = &multidb_ctx;
-        memset(ctx, 0, sizeof(*ctx));
-    } else {
-        *ctxp = ctx = callocz(1, sizeof(*ctx));
-    }
+    snprintfz(dbfiles_path, FILENAME_MAX, "%s/dbengine", host->cache_dir);
+    ret = mkdir(dbfiles_path, 0775);
+
+    int page_cache_mb = default_rrdeng_page_cache_mb;
+    int disk_space_mb = default_rrdeng_disk_quota_mb;
+
+    ctx = callocz(1, sizeof(*ctx));
     ctx->global_compress_alg = RRD_LZ4;
     if (page_cache_mb < RRDENG_MIN_PAGE_CACHE_SIZE_MB)
         page_cache_mb = RRDENG_MIN_PAGE_CACHE_SIZE_MB;
@@ -959,18 +970,18 @@ int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_p
         goto error_after_rrdeng_worker;
     }
 
-    return 0;
+    return ctx;
 
 error_after_rrdeng_worker:
     finalize_rrd_files(ctx);
 error_after_init_rrd_files:
     free_page_cache(ctx);
-    if (ctx != &multidb_ctx) {
+    if (ctx != multidb_ctx) {
         freez(ctx);
-        *ctxp = NULL;
+        //*ctxp = NULL;
     }
     rrd_stat_atomic_add(&rrdeng_reserved_file_descriptors, -RRDENG_FD_BUDGET_PER_INSTANCE);
-    return UV_EIO;
+    return NULL;//UV_EIO;
 }
 
 /*
@@ -994,7 +1005,7 @@ int rrdeng_exit(struct rrdengine_instance *ctx)
     //metalog_exit(ctx->metalog_ctx);
     free_page_cache(ctx);
 
-    if (ctx != &multidb_ctx) {
+    if (ctx != multidb_ctx) {
         freez(ctx);
     }
     rrd_stat_atomic_add(&rrdeng_reserved_file_descriptors, -RRDENG_FD_BUDGET_PER_INSTANCE);

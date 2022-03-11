@@ -16,7 +16,6 @@ extern int default_rrdeng_page_cache_mb;
 extern int default_rrdeng_disk_quota_mb;
 extern int default_multidb_disk_quota_mb;
 extern uint8_t rrdeng_drop_metrics_under_page_cache_pressure;
-extern struct rrdengine_instance multidb_ctx;
 
 struct rrdeng_region_info {
     time_t start_time;
@@ -36,7 +35,7 @@ extern void rrdeng_convert_legacy_uuid_to_multihost(char machine_guid[GUID_LEN +
                                                     uuid_t *ret_uuid);
 
 
-extern void rrdeng_metric_init(RRDDIM *rd);
+extern RRDDIM* rrdeng_metric_init(RRDSET *rrdset, const char *id, const char *filename);
 extern void rrdeng_store_metric_init(RRDDIM *rd);
 extern void rrdeng_store_metric_flush_current_page(RRDDIM *rd);
 extern void rrdeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number number);
@@ -54,8 +53,9 @@ extern time_t rrdeng_metric_oldest_time(RRDDIM *rd);
 extern void rrdeng_get_37_statistics(struct rrdengine_instance *ctx, unsigned long long *array);
 
 /* must call once before using anything */
-extern int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_path, unsigned page_cache_mb,
-                       unsigned disk_space_mb);
+/*extern int rrdeng_init(RRDHOST *host, struct rrdengine_instance **ctxp, char *dbfiles_path, unsigned page_cache_mb,
+                       unsigned disk_space_mb);*/
+extern STORAGE_ENGINE_INSTANCE* rrdeng_init(RRDHOST *host);
 
 extern int rrdeng_exit(struct rrdengine_instance *ctx);
 extern void rrdeng_prepare_exit(struct rrdengine_instance *ctx);

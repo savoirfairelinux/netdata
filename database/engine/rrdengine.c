@@ -1288,9 +1288,9 @@ void rrdengine_main(void)
     struct rrdengine_instance *ctx;
 
     sanity_check();
-    ret = rrdeng_init(NULL, &ctx, "/tmp", RRDENG_MIN_PAGE_CACHE_SIZE_MB, RRDENG_MIN_DISK_SPACE_MB);
-    if (ret) {
-        exit(ret);
+    ctx = rrdeng_init(NULL);
+    if (!ctx) {
+        exit(1);
     }
     rrdeng_exit(ctx);
     fprintf(stderr, "Hello world!");

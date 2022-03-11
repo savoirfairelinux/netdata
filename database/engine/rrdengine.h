@@ -13,6 +13,7 @@
 #include <openssl/evp.h>
 #include "daemon/common.h"
 #include "../rrd.h"
+#include "../storage_engine.h"
 #include "rrddiskprotocol.h"
 #include "rrdenginelib.h"
 #include "datafile.h"
@@ -34,6 +35,22 @@ struct rrdengine_instance;
 #define RRDENG_FILE_NUMBER_SCAN_TMPL "%1u-%10u"
 #define RRDENG_FILE_NUMBER_PRINT_TMPL "%1.1u-%10.10u"
 
+struct rrdeng_collect_handle {
+    struct rrdeng_page_descr *descr, *prev_descr;
+    unsigned long page_correlation_id;
+    struct rrdengine_instance *ctx;
+    // set to 1 when this dimension is not page aligned with the other dimensions in the chart
+    uint8_t unaligned_page;
+};
+
+struct rrdeng_query_handle {
+    struct rrdeng_page_descr *descr;
+    struct rrdengine_instance *ctx;
+    struct pg_cache_page_index *page_index;
+    time_t next_page_time;
+    time_t now;
+    unsigned position;
+};
 
 typedef enum {
     RRDENGINE_STATUS_UNINITIALIZED = 0,
@@ -204,6 +221,7 @@ extern rrdeng_stats_t global_flushing_pressure_page_deletions; /* number of dele
 #define QUIESCED    (2) /* is set after all threads have finished running */
 
 struct rrdengine_instance {
+    STORAGE_ENGINE_INSTANCE parent;
     struct metalog_instance *metalog_ctx;
     struct rrdengine_worker_config worker_config;
     struct completion rrdengine_completion;

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sqlite_functions.h"
+#ifdef ENABLE_DBENGINE
+#include "../engine/rrdengineapi.h"
+#endif
 
 #define DB_METADATA_VERSION "1"
 
@@ -1218,7 +1221,9 @@ RRDHOST *sql_create_host_by_uuid(char *hostname)
     host->system_info = callocz(1, sizeof(*host->system_info));;
     rrdhost_flag_set(host, RRDHOST_FLAG_ARCHIVED);
 #ifdef ENABLE_DBENGINE
-    host->rrdeng_ctx = &multidb_ctx;
+    if (multidb_ctx && multidb_ctx->engine->id == RRD_MEMORY_MODE_DBENGINE) {
+        host->rrdeng_ctx = multidb_ctx;
+    }
 #endif
 
 failed:
