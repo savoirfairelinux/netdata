@@ -126,7 +126,9 @@ void rrdeng_store_metric_init(RRDDIM *rd)
     struct pg_cache_page_index *page_index;
 
     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
-    handle = &rd->state->handle.rrdeng;
+
+    handle = callocz(1, sizeof(struct rrdeng_collect_handle));
+    rd->state->handle = handle;
     handle->ctx = ctx;
 
     handle->descr = NULL;
@@ -162,7 +164,7 @@ void rrdeng_store_metric_flush_current_page(RRDDIM *rd)
     struct rrdengine_instance *ctx;
     struct rrdeng_page_descr *descr;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     if (unlikely(!ctx))
         return;
@@ -218,7 +220,7 @@ void rrdeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number n
     storage_number *page;
     uint8_t must_flush_unaligned_page = 0, perfect_page_alignment = 0;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     pg_cache = &ctx->pg_cache;
     descr = handle->descr;
@@ -301,7 +303,7 @@ int rrdeng_store_metric_finalize(RRDDIM *rd)
     struct pg_cache_page_index *page_index;
     uint8_t can_delete_metric = 0;
 
-    handle = &rd->state->handle.rrdeng;
+    handle = rd->state->handle;
     ctx = handle->ctx;
     page_index = rd->state->page_index;
     rrdeng_store_metric_flush_current_page(rd);
@@ -314,6 +316,7 @@ int rrdeng_store_metric_finalize(RRDDIM *rd)
         can_delete_metric = 1;
     }
     uv_rwlock_wrunlock(&page_index->lock);
+    freez(handle);
 
    return can_delete_metric;
 }
@@ -535,12 +538,14 @@ void rrdeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_hand
     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
     rrdimm_handle->start_time = start_time;
     rrdimm_handle->end_time = end_time;
-    handle = &rrdimm_handle->rrdeng;
+
+    handle = calloc(1, sizeof(struct rrdeng_query_handle));
     handle->next_page_time = start_time;
     handle->now = start_time;
     handle->position = 0;
     handle->ctx = ctx;
     handle->descr = NULL;
+    rrdimm_handle->handle = handle;
     pages_nr = pg_cache_preload(ctx, rd->state->rrdeng_uuid, start_time * USEC_PER_SEC, end_time * USEC_PER_SEC,
                                 NULL, &handle->page_index);
     if (unlikely(NULL == handle->page_index || 0 == pages_nr))
@@ -559,7 +564,7 @@ storage_number rrdeng_load_metric_next(struct rrddim_query_handle *rrdimm_handle
     usec_t next_page_time = 0, current_position_time, page_end_time = 0;
     uint32_t page_length;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     if (unlikely(INVALID_TIME == handle->next_page_time)) {
         return SN_EMPTY_SLOT;
     }
@@ -643,7 +648,7 @@ int rrdeng_load_metric_is_finished(struct rrddim_query_handle *rrdimm_handle)
 {
     struct rrdeng_query_handle *handle;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     return (INVALID_TIME == handle->next_page_time);
 }
 
@@ -656,7 +661,7 @@ void rrdeng_load_metric_finalize(struct rrddim_query_handle *rrdimm_handle)
     struct rrdengine_instance *ctx;
     struct rrdeng_page_descr *descr;
 
-    handle = &rrdimm_handle->rrdeng;
+    handle = rrdimm_handle->handle;
     ctx = handle->ctx;
     descr = handle->descr;
     if (descr) {
