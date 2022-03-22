@@ -35,7 +35,7 @@ extern void rrdeng_convert_legacy_uuid_to_multihost(char machine_guid[GUID_LEN +
                                                     uuid_t *ret_uuid);
 
 
-extern void rrdeng_metric_init(RRDDIM *rd);
+extern RRDDIM* rrdeng_metric_init(RRDSET *rrdset, const char *id, const char *filename);
 extern void rrdeng_store_metric_init(RRDDIM *rd);
 extern void rrdeng_store_metric_flush_current_page(RRDDIM *rd);
 extern void rrdeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number number);

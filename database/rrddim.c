@@ -2,10 +2,7 @@
 
 #define NETDATA_RRD_INTERNALS
 #include "rrd.h"
-#include "database/rrddim_mem.h"
-#ifdef ENABLE_DBENGINE
-#include "database/engine/rrdengineapi.h"
-#endif
+#include "storage_engine.h"
 
 static inline void calc_link_to_rrddim(RRDDIM *rd)
 {
@@ -205,7 +202,11 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rrdset_strncpyz_name(filename, id, FILENAME_MAX);
     snprintfz(fullfilename, FILENAME_MAX, "%s/%s.db", st->cache_dir, filename);
 
-    if(memory_mode == RRD_MEMORY_MODE_SAVE || memory_mode == RRD_MEMORY_MODE_MAP ||
+    STORAGE_ENGINE* eng = engine_get(memory_mode);
+
+    rd = eng->api.dimension_init(st, id, fullfilename);
+
+    /*if(memory_mode == RRD_MEMORY_MODE_SAVE || memory_mode == RRD_MEMORY_MODE_MAP ||
        memory_mode == RRD_MEMORY_MODE_RAM) {
         rd = (RRDDIM *)mymmap(
                   (memory_mode == RRD_MEMORY_MODE_RAM) ? NULL : fullfilename
@@ -286,11 +287,12 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
         else
             rd->rrd_memory_mode = (memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_ALLOC;
     }
-    rd->memsize = size;
+    rd->memsize = size;*/
 
     strcpy(rd->magic, RRDDIMENSION_MAGIC);
 
-    rd->id = strdupz(id);
+    if (!rd->id)
+        rd->id = strdupz(id);
     rd->hash = simple_hash(rd->id);
 
     rd->cache_filename = strdupz(fullfilename);
@@ -327,37 +329,18 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     rd->last_collected_time.tv_sec = 0;
     rd->last_collected_time.tv_usec = 0;
     rd->rrdset = st;
-    rd->state = callocz(1, sizeof(*rd->state));
+    if (!rd->state)
+        rd->state = callocz(1, sizeof(*rd->state));
 #ifdef ENABLE_ACLK
     rd->state->aclk_live_status = -1;
 #endif
     (void) find_dimension_uuid(st, rd, &(rd->state->metric_uuid));
-    if(memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-#ifdef ENABLE_DBENGINE
-        rrdeng_metric_init(rd);
-        rd->state->collect_ops.init = rrdeng_store_metric_init;
-        rd->state->collect_ops.store_metric = rrdeng_store_metric_next;
-        rd->state->collect_ops.finalize = rrdeng_store_metric_finalize;
-        rd->state->query_ops.init = rrdeng_load_metric_init;
-        rd->state->query_ops.next_metric = rrdeng_load_metric_next;
-        rd->state->query_ops.is_finished = rrdeng_load_metric_is_finished;
-        rd->state->query_ops.finalize = rrdeng_load_metric_finalize;
-        rd->state->query_ops.latest_time = rrdeng_metric_latest_time;
-        rd->state->query_ops.oldest_time = rrdeng_metric_oldest_time;
-#endif
-    } else {
-        rd->state->collect_ops.init         = rrddim_collect_init;
-        rd->state->collect_ops.store_metric = rrddim_collect_store_metric;
-        rd->state->collect_ops.finalize     = rrddim_collect_finalize;
-        rd->state->query_ops.init           = rrddim_query_init;
-        rd->state->query_ops.next_metric    = rrddim_query_next_metric;
-        rd->state->query_ops.is_finished    = rrddim_query_is_finished;
-        rd->state->query_ops.finalize       = rrddim_query_finalize;
-        rd->state->query_ops.latest_time    = rrddim_query_latest_time;
-        rd->state->query_ops.oldest_time    = rrddim_query_oldest_time;
-    }
+
+    rd->state->collect_ops = eng->api.collect_ops;
+    rd->state->query_ops = eng->api.query_ops;
     store_active_dimension(&rd->state->metric_uuid);
     rd->state->collect_ops.init(rd);
+
     // append this dimension
     if(!st->dimensions)
         st->dimensions = rd;
@@ -450,7 +433,9 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 #endif
 
     RRD_MEMORY_MODE rrd_memory_mode = rd->rrd_memory_mode;
-    switch(rrd_memory_mode) {
+    STORAGE_ENGINE* eng = engine_get(rrd_memory_mode);
+    debug(D_RRD_CALLS, "Removing dimension '%s'.", rd->name);
+    /*switch(rrd_memory_mode) {
         case RRD_MEMORY_MODE_SAVE:
         case RRD_MEMORY_MODE_MAP:
         case RRD_MEMORY_MODE_RAM:
@@ -470,7 +455,12 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
             freez(rd->state);
             freez(rd);
             break;
-    }
+    }*/
+    freez((void *)rd->id);
+    freez(rd->cache_filename);
+    freez(rd->state);
+    eng->api.dimension_destroy(rd);
+
 #ifdef ENABLE_ACLK
     if (db_rotated || RRD_MEMORY_MODE_DBENGINE != rrd_memory_mode)
         rrdset_flag_clear(st, RRDSET_FLAG_ACLK);

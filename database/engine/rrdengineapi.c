@@ -47,7 +47,7 @@ void rrdeng_convert_legacy_uuid_to_multihost(char machine_guid[GUID_LEN + 1], uu
     memcpy(ret_uuid, hash_value, sizeof(uuid_t));
 }
 
-void rrdeng_metric_init(RRDDIM *rd)
+RRDDIM* rrdeng_metric_init(RRDSET *rrdset, const char *id, const char *filename)
 {
     struct page_cache *pg_cache;
     struct rrdengine_instance *ctx;
@@ -56,16 +56,21 @@ void rrdeng_metric_init(RRDDIM *rd)
     Pvoid_t *PValue;
     struct pg_cache_page_index *page_index = NULL;
     int is_multihost_child = 0;
-    RRDHOST *host = rd->rrdset->rrdhost;
+    RRDHOST *host = rrdset->rrdhost;
 
-    ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
+    ctx = get_rrdeng_ctx_from_host(rrdset->rrdhost);
     if (unlikely(!ctx)) {
-        error("Failed to fetch multidb context");
-        return;
+        error("Failed to fetch context");
+        return NULL;
     }
+    unsigned long size = sizeof(RRDDIM) + (rrdset->entries * sizeof(storage_number));
+    RRDDIM* rd = callocz(1, size);
+    rd->id = strdupz(id);
+    rd->memsize = size;
+    rd->state = callocz(1, sizeof(*rd->state));
     pg_cache = &ctx->pg_cache;
 
-    rrdeng_generate_legacy_uuid(rd->id, rd->rrdset->id, &legacy_uuid);
+    rrdeng_generate_legacy_uuid(rd->id, rrdset->id, &legacy_uuid);
     if (host != localhost && host->rrdeng_ctx->engine && host->rrdeng_ctx == host->rrdeng_ctx->engine->multidb_instance)
         is_multihost_child = 1;
 
@@ -97,7 +102,7 @@ void rrdeng_metric_init(RRDDIM *rd)
     } else {
         /* There are legacy UUIDs in the database, implement backward compatibility */
 
-        rrdeng_convert_legacy_uuid_to_multihost(rd->rrdset->rrdhost->machine_guid, &legacy_uuid,
+        rrdeng_convert_legacy_uuid_to_multihost(rrdset->rrdhost->machine_guid, &legacy_uuid,
                                                 &multihost_legacy_uuid);
 
         int need_to_store = uuid_compare(rd->state->metric_uuid, multihost_legacy_uuid);
@@ -105,12 +110,14 @@ void rrdeng_metric_init(RRDDIM *rd)
         uuid_copy(rd->state->metric_uuid, multihost_legacy_uuid);
 
         if (unlikely(need_to_store))
-            (void)sql_store_dimension(&rd->state->metric_uuid, rd->rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor,
+            (void)sql_store_dimension(&rd->state->metric_uuid, rrdset->chart_uuid, rd->id, rd->name, rd->multiplier, rd->divisor,
                 rd->algorithm);
 
     }
     rd->state->rrdeng_uuid = &page_index->id;
     rd->state->page_index = page_index;
+    rd->rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
+    return rd;
 }
 
 /*
@@ -536,6 +543,7 @@ void rrdeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_hand
     ctx = get_rrdeng_ctx_from_host(rd->rrdset->rrdhost);
     rrdimm_handle->start_time = start_time;
     rrdimm_handle->end_time = end_time;
+    rrdimm_handle->rd = rd;
 
     handle = calloc(1, sizeof(struct rrdeng_query_handle));
     handle->next_page_time = start_time;
