@@ -6,8 +6,13 @@
 
 void generate_metadata_logfile_path(struct metadata_logfile *metalogfile, char *str, size_t maxlen)
 {
+    if (metalogfile->ctx->rrdeng_ctx->engine->id != RRD_MEMORY_MODE_DBENGINE)
+        return;
+
+    struct rrdengine_instance* rrdeng_ctx = (struct rrdengine_instance*)metalogfile->ctx->rrdeng_ctx;
+
     (void) snprintfz(str, maxlen, "%s/" METALOG_PREFIX METALOG_FILE_NUMBER_PRINT_TMPL METALOG_EXTENSION,
-                    metalogfile->ctx->rrdeng_ctx->dbfiles_path, metalogfile->starting_fileno, metalogfile->fileno);
+                    rrdeng_ctx->dbfiles_path, metalogfile->starting_fileno, metalogfile->fileno);
 }
 
 void metadata_logfile_init(struct metadata_logfile *metalogfile, struct metalog_instance *ctx, unsigned starting_fileno,
@@ -316,7 +321,14 @@ static int scan_metalog_files(struct metalog_instance *ctx)
     static uv_fs_t req;
     uv_dirent_t dent;
     struct metadata_logfile **metalogfiles, *metalogfile;
-    char *dbfiles_path = ctx->rrdeng_ctx->dbfiles_path;
+
+    if (ctx->rrdeng_ctx->engine->id != RRD_MEMORY_MODE_DBENGINE)
+        return 0;
+
+    struct rrdengine_instance* rrdeng_ctx = (struct rrdengine_instance*)ctx->rrdeng_ctx;
+
+    char *dbfiles_path = rrdeng_ctx->dbfiles_path;
+    //char *dbfiles_path = ctx->rrdeng_ctx->dbfiles_path;
 
     ret = uv_fs_scandir(NULL, &req, dbfiles_path, 0, NULL);
     if (ret < 0) {
@@ -377,7 +389,7 @@ static int scan_metalog_files(struct metalog_instance *ctx)
 
     PARSER_USER_OBJECT metalog_parser_object;
     metalog_parser_object.enabled = cd.enabled;
-    metalog_parser_object.host = ctx->rrdeng_ctx->host;
+    metalog_parser_object.host = rrdeng_ctx->host;
     metalog_parser_object.cd = &cd;
     metalog_parser_object.trust_durations = 0;
     metalog_parser_object.private = &metalog_parser_state;
@@ -439,11 +451,11 @@ after_failed_to_parse:
 int init_metalog_files(struct metalog_instance *ctx)
 {
     int ret;
-    char *dbfiles_path = ctx->rrdeng_ctx->dbfiles_path;
+    //char *dbfiles_path = ctx->rrdeng_ctx->dbfiles_path;
 
     ret = scan_metalog_files(ctx);
     if (ret < 0) {
-        error("Failed to scan path \"%s\".", dbfiles_path);
+        //error("Failed to scan path \"%s\".", dbfiles_path);
         return ret;
     }/* else if (0 == ret) {
         ctx->last_fileno = 1;

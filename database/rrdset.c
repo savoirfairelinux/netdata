@@ -513,6 +513,7 @@ RRDSET *rrdset_create_custom(
         , RRD_MEMORY_MODE memory_mode
         , long history_entries
 ) {
+    error("rrdset_create_custom %s %s %s", id, name, rrd_memory_mode_name(memory_mode));
     if(!type || !type[0]) {
         fatal("Cannot create rrd stats without a type: id '%s', name '%s', family '%s', context '%s', title '%s', units '%s', plugin '%s', module '%s'."
               , (id && *id)?id:"<unset>"

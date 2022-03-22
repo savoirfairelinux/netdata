@@ -160,6 +160,7 @@ void rrdcalc_link_to_rrddim(RRDDIM *rd, RRDSET *st, RRDHOST *host) {
 RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collected_number multiplier,
                           collected_number divisor, RRD_ALGORITHM algorithm, RRD_MEMORY_MODE memory_mode)
 {
+    info("rrddim_add_custom %s %s %s", id, name, rrd_memory_mode_name(memory_mode));
     RRDHOST *host = st->rrdhost;
     rrdset_wrlock(st);
 
@@ -198,6 +199,7 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
     unsigned long size = sizeof(RRDDIM) + (st->entries * sizeof(storage_number));
 
     debug(D_RRD_CALLS, "Adding dimension '%s/%s'.", st->id, id);
+    info("Adding dimension '%s/%s'.", st->id, id);
 
     rrdset_strncpyz_name(filename, id, FILENAME_MAX);
     snprintfz(fullfilename, FILENAME_MAX, "%s/%s.db", st->cache_dir, filename);
@@ -284,6 +286,8 @@ RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collecte
         rd = callocz(1, size);
         if (memory_mode == RRD_MEMORY_MODE_DBENGINE)
             rd->rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
+        else if (memory_mode == RRD_MEMORY_MODE_MONGODB)
+            rd->rrd_memory_mode = RRD_MEMORY_MODE_MONGODB;
         else
             rd->rrd_memory_mode = (memory_mode == RRD_MEMORY_MODE_NONE) ? RRD_MEMORY_MODE_NONE : RRD_MEMORY_MODE_ALLOC;
     }
@@ -448,6 +452,7 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 
         case RRD_MEMORY_MODE_ALLOC:
         case RRD_MEMORY_MODE_NONE:
+        case RRD_MEMORY_MODE_MONGODB:
         case RRD_MEMORY_MODE_DBENGINE:
             debug(D_RRD_CALLS, "Removing dimension '%s'.", rd->name);
             freez((void *)rd->id);

@@ -937,14 +937,14 @@ rrdeng_init(RRDHOST *host)
     strncpyz(ctx->dbfiles_path, dbfiles_path, sizeof(ctx->dbfiles_path) - 1);
     ctx->dbfiles_path[sizeof(ctx->dbfiles_path) - 1] = '\0';
     if (NULL == host)
-        strncpyz(ctx->machine_guid, registry_get_this_machine_guid(), GUID_LEN);
+        strncpyz(ctx->parent.machine_guid, registry_get_this_machine_guid(), GUID_LEN);
     else
-        strncpyz(ctx->machine_guid, host->machine_guid, GUID_LEN);
+        strncpyz(ctx->parent.machine_guid, host->machine_guid, GUID_LEN);
 
     ctx->drop_metrics_under_page_cache_pressure = rrdeng_drop_metrics_under_page_cache_pressure;
     ctx->metric_API_max_producers = 0;
     ctx->quiesce = NO_QUIESCE;
-    ctx->metalog_ctx = NULL; /* only set this after the metadata log has finished initializing */
+    ctx->parent.metalog_ctx = NULL; /* only set this after the metadata log has finished initializing */
     ctx->host = host;
 
     memset(&ctx->worker_config, 0, sizeof(ctx->worker_config));
@@ -1001,7 +1001,7 @@ int rrdeng_exit(struct rrdengine_instance *ctx)
     fatal_assert(0 == uv_thread_join(&ctx->worker_config.thread));
 
     finalize_rrd_files(ctx);
-    //metalog_exit(ctx->metalog_ctx);
+    //metalog_exit(ctx->parent.metalog_ctx);
     free_page_cache(ctx);
     freez(ctx);
     rrd_stat_atomic_add(&rrdeng_reserved_file_descriptors, -RRDENG_FD_BUDGET_PER_INSTANCE);
@@ -1024,6 +1024,6 @@ void rrdeng_prepare_exit(struct rrdengine_instance *ctx)
     completion_wait_for(&ctx->rrdengine_completion);
     completion_destroy(&ctx->rrdengine_completion);
 
-    //metalog_prepare_exit(ctx->metalog_ctx);
+    //metalog_prepare_exit(ctx->parent.metalog_ctx);
 }
 

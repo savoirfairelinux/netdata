@@ -46,6 +46,8 @@ struct storage_engine {
 // Abstract structure to be extended by implementations
 struct storage_engine_instance {
     STORAGE_ENGINE* engine;
+    struct metalog_instance *metalog_ctx;
+    char machine_guid[GUID_LEN + 1]; /* the unique ID of the corresponding host, or localhost for multihost DB */
 };
 
 STORAGE_ENGINE* engine_get(RRD_MEMORY_MODE mmode);
