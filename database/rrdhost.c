@@ -163,14 +163,15 @@ RRDHOST *rrdhost_create(const char *hostname,
 ) {
     debug(D_RRDHOST, "Host '%s': adding with guid '%s'", hostname, guid);
 
+    int is_persistent = memory_mode == RRD_MEMORY_MODE_DBENGINE || memory_mode == RRD_MEMORY_MODE_MONGODB;
 #ifdef ENABLE_DBENGINE
-    int is_legacy = (memory_mode == RRD_MEMORY_MODE_DBENGINE) && is_legacy_child(guid);
+    int is_legacy = is_persistent && is_legacy_child(guid);
 #else
     int is_legacy = 1;
 #endif
     rrd_check_wrlock();
 
-    int is_in_multihost = (memory_mode == RRD_MEMORY_MODE_DBENGINE && !is_legacy);
+    int is_in_multihost = is_persistent && !is_legacy;
     RRDHOST *host = callocz(1, sizeof(RRDHOST));
 
     set_host_properties(host, (update_every > 0)?update_every:1, memory_mode, hostname, registry_hostname, guid, os,
@@ -655,6 +656,7 @@ restart_after_removal:
 // RRDHOST global / startup initialization
 
 int rrd_init(char *hostname, struct rrdhost_system_info *system_info) {
+    info("rrd_init %s\n", hostname);
     rrdset_free_obsolete_time = config_get_number(CONFIG_SECTION_GLOBAL, "cleanup obsolete charts after seconds", rrdset_free_obsolete_time);
     // Current chart locking and invalidation scheme doesn't prevent Netdata from segmentation faults if a short
     // cleanup delay is set. Extensive stress tests showed that 10 seconds is quite a safe delay. Look at

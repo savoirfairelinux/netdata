@@ -43,7 +43,7 @@ struct rrdeng_collect_handle {
     uint8_t unaligned_page;
 };
 
-struct rrdeng_query_handle {
+    struct rrdeng_query_handle {
     struct rrdeng_page_descr *descr;
     struct rrdengine_instance *ctx;
     struct pg_cache_page_index *page_index;
@@ -222,7 +222,6 @@ extern rrdeng_stats_t global_flushing_pressure_page_deletions; /* number of dele
 
 struct rrdengine_instance {
     STORAGE_ENGINE_INSTANCE parent;
-    struct metalog_instance *metalog_ctx;
     struct rrdengine_worker_config worker_config;
     struct completion rrdengine_completion;
     struct page_cache pg_cache;
@@ -232,7 +231,6 @@ struct rrdengine_instance {
     struct rrdengine_datafile_list datafiles;
     RRDHOST *host; /* the legacy host, or NULL for multi-host DB */
     char dbfiles_path[FILENAME_MAX + 1];
-    char machine_guid[GUID_LEN + 1]; /* the unique ID of the corresponding host, or localhost for multihost DB */
     uint64_t disk_space;
     uint64_t max_disk_space;
     unsigned last_fileno; /* newest index of datafile and journalfile */

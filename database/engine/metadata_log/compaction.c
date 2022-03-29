@@ -2,6 +2,7 @@
 #define NETDATA_RRD_INTERNALS
 
 #include "metadatalog.h"
+#include "../rrdengineapi.h"
 
 /* Return 0 on success. */
 int compaction_failure_recovery(struct metalog_instance *ctx, struct metadata_logfile **metalogfiles,
@@ -10,7 +11,13 @@ int compaction_failure_recovery(struct metalog_instance *ctx, struct metadata_lo
     int ret;
     unsigned starting_fileno, fileno, i, j, recovered_files;
     struct metadata_logfile *metalogfile = NULL, *compactionfile = NULL, **tmp_metalogfiles;
-    char *dbfiles_path = ctx->rrdeng_ctx->dbfiles_path;
+
+    if (ctx->rrdeng_ctx->engine->id != RRD_MEMORY_MODE_DBENGINE)
+        return 0;
+
+    struct rrdengine_instance* rrdeng_ctx = (struct rrdengine_instance*)ctx->rrdeng_ctx;
+
+    char *dbfiles_path = rrdeng_ctx->dbfiles_path;
 
     for (i = 0 ; i < *matched_files ; ++i) {
         metalogfile = metalogfiles[i];

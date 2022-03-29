@@ -167,6 +167,7 @@ void rrdcalc_link_to_rrddim(RRDDIM *rd, RRDSET *st, RRDHOST *host) {
 RRDDIM *rrddim_add_custom(RRDSET *st, const char *id, const char *name, collected_number multiplier,
                           collected_number divisor, RRD_ALGORITHM algorithm, RRD_MEMORY_MODE memory_mode)
 {
+    info("rrddim_add_custom %s %s %s", id, name, rrd_memory_mode_name(memory_mode));
     RRDHOST *host = st->rrdhost;
     rrdset_wrlock(st);
 
@@ -368,6 +369,7 @@ void rrddim_free_custom(RRDSET *st, RRDDIM *rd, int db_rotated)
 
         case RRD_MEMORY_MODE_ALLOC:
         case RRD_MEMORY_MODE_NONE:
+        case RRD_MEMORY_MODE_MONGODB:
         case RRD_MEMORY_MODE_DBENGINE:
             debug(D_RRD_CALLS, "Removing dimension '%s'.", rd->name);
             freez((void *)rd->id);

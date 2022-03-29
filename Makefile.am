@@ -493,6 +493,15 @@ if ENABLE_DBENGINE
         $(NULL)
 endif
 
+if ENABLE_ENGINE_MONGODB
+    RRD_PLUGIN_FILES += \
+        database/mongodb/dbengine.c \
+        database/mongodb/dbengine.h \
+        database/mongodb/dbengineapi.c \
+        database/mongodb/dbengineapi.h \
+        $(NULL)
+endif
+
 API_PLUGIN_FILES = \
     web/api/badges/web_buffer_svg.c \
     web/api/badges/web_buffer_svg.h \

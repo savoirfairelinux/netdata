@@ -167,6 +167,12 @@ AC_ARG_ENABLE(
     [enable_dbengine="detect"]
 )
 AC_ARG_ENABLE(
+    [engine-mongodb],
+    [AS_HELP_STRING([--enable-engine-mongodb], [enable mongodb engine @<:@default autodetect@:>@])],
+    ,
+    [enable_engine_mongodb="detect"]
+)
+AC_ARG_ENABLE(
     [jsonc],
     [AS_HELP_STRING([--enable-jsonc], [Enable JSON-C support @<:@default autodetect@:>@])],
     ,
@@ -1464,6 +1470,9 @@ PKG_CHECK_MODULES(
 test "${enable_exporting_mongodb}" = "yes" -a "${have_libmongoc}" != "yes" && \
     AC_MSG_ERROR([libmongoc required but not found. Try installing `mongoc`.])
 
+test "${enable_engine_mongodb}" = "yes" -a "${have_libmongoc}" != "yes" && \
+    AC_MSG_ERROR([libmongoc required but not found. Try installing `mongoc`.])
+
 AC_MSG_CHECKING([if mongodb exporting connector should be enabled])
 if test "${enable_exporting_mongodb}" != "no" -a "${have_libmongoc}" = "yes"; then
     enable_exporting_mongodb="yes"
@@ -1476,6 +1485,18 @@ fi
 
 AC_MSG_RESULT([${enable_exporting_mongodb}])
 AM_CONDITIONAL([ENABLE_EXPORTING_MONGODB], [test "${enable_exporting_mongodb}" = "yes"])
+
+AC_MSG_CHECKING([if mongodb engine should be enabled])
+if test "${enable_engine_mongodb}" != "no" -a "${have_libmongoc}" = "yes"; then
+    enable_engine_mongodb="yes"
+    AC_DEFINE([ENABLE_ENGINE_MONGODB], [1], [netdata mongodb engine usability])
+    OPTIONAL_MONGOC_CFLAGS="${LIBMONGOC_CFLAGS}"
+    OPTIONAL_MONGOC_LIBS="${LIBMONGOC_LIBS}"
+else
+    enable_engine_mongodb="no"
+fi
+AC_MSG_RESULT([${enable_engine_mongodb}])
+AM_CONDITIONAL([ENABLE_ENGINE_MONGODB], [test "${enable_engine_mongodb}" = "yes"])
 
 
 # -----------------------------------------------------------------------------

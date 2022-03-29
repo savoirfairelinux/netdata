@@ -6,7 +6,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include "../rrdengine.h"
+#include "database/storage_engine.h"
 #include "metadatalogprotocol.h"
 #include "logfile.h"
 #include "metadatalogapi.h"
@@ -20,7 +20,7 @@ struct parser_user_object;
 #define METALOG_FILE_NUMBER_PRINT_TMPL "%5.5u-%5.5u"
 
 struct metalog_instance {
-    struct rrdengine_instance *rrdeng_ctx;
+    STORAGE_ENGINE_INSTANCE *rrdeng_ctx;
     struct parser_user_object *metalog_parser_object;
     uint8_t initialized; /* set to 1 to mark context initialized */
 };
