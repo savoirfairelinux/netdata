@@ -76,32 +76,23 @@ bool mongoeng_create_host_collection(struct mongoengine_instance *ctx, RRDHOST *
     return r;
 }
 
-RRDDIM* mongoeng_metric_init(RRDSET *rrdset, const char *id, const char *filename)
+RRDDIM* mongoeng_metric_init(RRDDIM *rd)
 {
-    UNUSED(filename);
     //info("MongoDB mongoeng_metric_init %s", id);
 
     struct mongoeng_collect_handle *handle;
     struct mongoengine_instance *ctx;
 
-    ctx = get_mongoeng_ctx_from_host(rrdset->rrdhost);
+    ctx = get_mongoeng_ctx_from_host(rd->rrdset->rrdhost);
     if (unlikely(!ctx)) {
         error("MongoDB mongoeng_metric_init failed to fetch context");
         return NULL;
     }
 
     // move collection creation into host creation ?
-    if(!rrdset->rrdhost->collection)
-        if(!mongoeng_create_host_collection(ctx, rrdset->rrdhost))
+    if(!rd->rrdset->rrdhost->collection)
+        if(!mongoeng_create_host_collection(ctx, rd->rrdset->rrdhost))
             return NULL;
-
-    unsigned long size = sizeof(RRDDIM) + (rrdset->entries * sizeof(storage_number));
-    RRDDIM* rd = callocz(1, size);
-    rd->id = strdupz(id);
-    rd->memsize = size;
-    rd->state = callocz(1, sizeof(*rd->state));
-    rd->rrdset = rrdset;
-    rd->rrd_memory_mode = RRD_MEMORY_MODE_MONGODB;
 
     handle = callocz(1, sizeof(struct mongoeng_collect_handle));
     rd->state->handle = (STORAGE_COLLECT_HANDLE *) handle;

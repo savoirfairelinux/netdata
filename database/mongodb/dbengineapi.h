@@ -28,7 +28,7 @@ struct mongoeng_region_info {
     unsigned points;
 };
 
-extern RRDDIM* mongoeng_metric_init(RRDSET *rrdset, const char *id, const char *filename);
+extern RRDDIM* mongoeng_metric_init(RRDDIM *rd);
 extern void mongoeng_store_metric_init(RRDDIM *rd);
 extern void mongoeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number number);
 extern int mongoeng_store_metric_finalize(RRDDIM *rd);

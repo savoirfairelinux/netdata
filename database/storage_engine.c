@@ -54,6 +54,7 @@ static RRDDIM* rrddim_init_##MMODE(RRDSET *st, const char *id, const char *filen
 DIM_INIT(NONE)
 DIM_INIT(ALLOC)
 DIM_INIT(DBENGINE)
+DIM_INIT(MONGODB)
 
 static const struct rrddim_collect_ops im_collect_ops = {
     .init = rrddim_collect_init,
@@ -233,13 +234,20 @@ STORAGE_ENGINE engines[] = {
         .id = RRD_MEMORY_MODE_MONGODB,
         .name = RRD_MEMORY_MODE_MONGODB_NAME,
         .api = {
-            .init = mongoeng_init,
-            .exit = mongoeng_prepare_exit,
-            .destroy = mongoeng_exit,
-            .set_init = rrdset_init_MONGODB,
-            .set_destroy = dimension_destroy_freez,
-            .dimension_init = mongoeng_metric_init,
-            .dimension_destroy = dimension_destroy_freez,
+            .engine_ops = {
+                .create = mongoeng_init,
+                .exit = mongoeng_prepare_exit,
+                .destroy = mongoeng_exit
+            },
+            .set_ops = {
+                .create = rrdset_init_MONGODB,
+                .destroy = set_destroy_freez
+            },
+            .dim_ops = {
+                .create = rrddim_init_MONGODB,
+                .init = mongoeng_metric_init, //**
+                .destroy = dimension_destroy_freez,
+            },
             .collect_ops = {
                 .init = mongoeng_store_metric_init,
                 .store_metric = mongoeng_store_metric_next,
