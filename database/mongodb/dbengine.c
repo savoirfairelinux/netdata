@@ -183,18 +183,16 @@ void mongoeng_worker(void* arg)
                 char *str;
                 bson_t reply;
                 bson_error_t error;            
-                rrdhost_foreach_read(host) {
-                    if(host->collection) {
-                        if(host->op) {
-                            ret = mongoc_bulk_operation_execute (host->op, &reply, &error);
-                            str = bson_as_canonical_extended_json (&reply, NULL);
-                            //info ("%s\n", str);
-                            bson_free (str);
-                            bson_destroy (&reply);
-                            mongoc_bulk_operation_destroy (host->op);
-                        }                
-                        host->op = mongoc_collection_create_bulk_operation_with_opts (host->collection, NULL);
-                    }
+                if(ctx->collection) {
+                    if(ctx->op) {
+                        ret = mongoc_bulk_operation_execute (ctx->op, &reply, &error);
+                        str = bson_as_canonical_extended_json (&reply, NULL);
+                        //info ("%s\n", str);
+                        bson_free (str);
+                        bson_destroy (&reply);
+                        mongoc_bulk_operation_destroy (ctx->op);
+                    }                
+                    ctx->op = mongoc_collection_create_bulk_operation_with_opts (ctx->collection, NULL);
                 }
 
                 rrd_unlock();

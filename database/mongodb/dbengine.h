@@ -142,6 +142,7 @@ struct mongoengine_statistics {
 
 typedef struct _mongoc_client_t mongoc_client_t;
 typedef struct _mongoc_database_t mongoc_database_t;
+typedef struct _mongoc_collection_t mongoc_collection_t;
 typedef struct _mongoc_bulk_operation_t mongoc_bulk_operation_t;
 
 struct mongoengine_instance {
@@ -159,6 +160,8 @@ struct mongoengine_instance {
     uv_mutex_t rwlock;
     mongoc_client_t* mongo_client;
     mongoc_database_t* database;
+    mongoc_collection_t* collection;
+    mongoc_bulk_operation_t *op;
 
     struct mongoengine_statistics stats;
 };

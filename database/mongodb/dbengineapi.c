@@ -18,9 +18,9 @@ static inline struct mongoengine_instance *get_mongoeng_ctx_from_host(RRDHOST *h
     return (struct mongoengine_instance *)host->rrdeng_ctx;
 }
 
-bool mongoeng_create_host_collection(struct mongoengine_instance *ctx, RRDHOST *host)
+bool mongoeng_create_collection(struct mongoengine_instance *ctx)
 {
-    //info("MongoDB mongoeng_create_host_collection");
+    //info("MongoDB mongoeng_create_collection");
     bson_error_t error;
     bson_t *opts = bson_new();
     bson_t *timeseries = bson_new();
@@ -33,22 +33,22 @@ bool mongoeng_create_host_collection(struct mongoengine_instance *ctx, RRDHOST *
         BSON_APPEND_INT32(opts, "expireAfterSeconds", mongoengine_expiration);
 
     uv_mutex_lock(&ctx->rwlock);
-    host->collection = mongoc_database_create_collection(ctx->database, &host->machine_guid[0], opts, &error);
+    ctx->collection = mongoc_database_create_collection(ctx->database, "collection", opts, &error);
     uv_mutex_unlock(&ctx->rwlock);
 
     bson_destroy(opts);
     bson_destroy(timeseries);
 
-    if (!host->collection) {
+    if (!ctx->collection) {
         if(error.code == TIMESERIES_ALREADY_EXISTS_ERROR)
-            host->collection = mongoc_database_get_collection(ctx->database, &host->machine_guid[0]);
+            ctx->collection = mongoc_database_get_collection(ctx->database, "collection");
         else {
-            error("MongoDB mongoeng_create_host_collection couldn't create collection");
+            error("MongoDB mongoeng_create_collection couldn't create collection");
             return false;
         }
     }
 
-    host->op = mongoc_collection_create_bulk_operation_with_opts (host->collection, NULL);
+    ctx->op = mongoc_collection_create_bulk_operation_with_opts (ctx->collection, NULL);
 
     char *index_name;
     bson_t keys;
@@ -56,8 +56,9 @@ bool mongoeng_create_host_collection(struct mongoengine_instance *ctx, RRDHOST *
     bson_init (&keys);
     BSON_APPEND_INT32 (&keys, "m.s", 1);
     BSON_APPEND_INT32 (&keys, "m.d", 1);
+    BSON_APPEND_INT32 (&keys, "m.h", 1);
     index_name = mongoc_collection_keys_to_index_string (&keys);
-    create_indexes = BCON_NEW ("createIndexes", BCON_UTF8 (&host->machine_guid[0]), "indexes", "[", "{",
+    create_indexes = BCON_NEW ("createIndexes", BCON_UTF8 ("collection"), "indexes", "[", "{",
                                                                                   "key", BCON_DOCUMENT(&keys),
                                                                                   "name", BCON_UTF8(index_name),
                                                                                "}", "]");
@@ -70,7 +71,7 @@ bool mongoeng_create_host_collection(struct mongoengine_instance *ctx, RRDHOST *
     bson_destroy (create_indexes);
 
     if(!r) {
-        error("MongoDB mongoeng_create_host_collection ERROR %s", error.message);
+        error("MongoDB mongoeng_create_collection ERROR %s", error.message);
     }
 
     return r;
@@ -88,11 +89,6 @@ RRDDIM* mongoeng_metric_init(RRDDIM *rd)
         error("MongoDB mongoeng_metric_init failed to fetch context");
         return NULL;
     }
-
-    // move collection creation into host creation ?
-    if(!rd->rrdset->rrdhost->collection)
-        if(!mongoeng_create_host_collection(ctx, rd->rrdset->rrdhost))
-            return NULL;
 
     handle = callocz(1, sizeof(struct mongoeng_collect_handle));
     rd->state->handle = (STORAGE_COLLECT_HANDLE *) handle;
@@ -143,6 +139,7 @@ void mongoeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number
     bson_t *doc = bson_new ();
     bson_t *meta = bson_new ();
     BSON_APPEND_INT32 (meta, "v", number);
+    BSON_APPEND_UTF8 (meta, "h", rd->rrdset->rrdhost->machine_guid);
     BSON_APPEND_UTF8 (meta, "s", rd->rrdset->id);
     BSON_APPEND_UTF8 (meta, "d", rd->id);
     BSON_APPEND_DATE_TIME (doc, "t", point_in_time/USEC_PER_MS);
@@ -150,7 +147,7 @@ void mongoeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number
 
     uv_mutex_lock(&ctx->wlock);
 
-    if (unlikely(!rd->rrdset->rrdhost->op)) {
+    if (unlikely(!ctx->op)) {
         error("MongoDB mongoeng_store_metric_next ERROR no op");
         uv_mutex_unlock(&ctx->wlock);
         bson_destroy (doc);
@@ -158,7 +155,7 @@ void mongoeng_store_metric_next(RRDDIM *rd, usec_t point_in_time, storage_number
         return;
     }
 
-    mongoc_bulk_operation_insert (rd->rrdset->rrdhost->op, doc);
+    mongoc_bulk_operation_insert (ctx->op, doc);
     rd->state->latest_time = point_in_time;
 
     uv_mutex_unlock(&ctx->wlock);
@@ -238,7 +235,7 @@ void mongoeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_ha
     storage_number value = 0;
     unsigned count = 0;
 
-    filter = BCON_NEW("m.s", rd->rrdset->id, "m.d", rd->id, "t", "{",
+    filter = BCON_NEW("m.h", rd->rrdset->rrdhost->machine_guid, "m.s", rd->rrdset->id, "m.d", rd->id, "t", "{",
                                                                     "$gte", BCON_DATE_TIME(start_time * MSEC_PER_SEC),
                                                                     "$lte", BCON_DATE_TIME(end_time * MSEC_PER_SEC),
                                                                  "}");
@@ -250,7 +247,7 @@ void mongoeng_load_metric_init(RRDDIM *rd, struct rrddim_query_handle *rrdimm_ha
                     "sort", "{", "t", BCON_INT32(-1), "}");
 
     uv_mutex_lock(&ctx->rwlock);
-    cursor = mongoc_collection_find_with_opts(rd->rrdset->rrdhost->collection, filter, opts, NULL);
+    cursor = mongoc_collection_find_with_opts(ctx->collection, filter, opts, NULL);
     while (mongoc_cursor_next (cursor, &doc)) {
         if(bson_iter_init_find(&iter, doc, "t") && BSON_ITER_HOLDS_DATE_TIME(&iter)) {
             time = bson_iter_time_t(&iter);
@@ -357,7 +354,7 @@ time_t mongoeng_query_metric_latest_time(RRDDIM *rd)
 
     handle = (struct mongoeng_collect_handle *)rd->state->handle;
     ctx = handle->ctx;
-    filter = BCON_NEW("m.s", rd->rrdset->id, "m.d", rd->id);
+    filter = BCON_NEW("m.h", rd->rrdset->rrdhost->machine_guid, "m.s", rd->rrdset->id, "m.d", rd->id);
     opts = BCON_NEW("projection", "{",
                         "_id", BCON_BOOL(false),
                         "t", BCON_BOOL(true),
@@ -366,7 +363,7 @@ time_t mongoeng_query_metric_latest_time(RRDDIM *rd)
                     "limit", BCON_INT64(1));
 
     uv_mutex_lock(&ctx->rwlock);
-    cursor = mongoc_collection_find_with_opts(rd->rrdset->rrdhost->collection, filter, opts, NULL);
+    cursor = mongoc_collection_find_with_opts(ctx->collection, filter, opts, NULL);
     if (mongoc_cursor_next (cursor, &doc)) {
         if(bson_iter_init_find(&iter, doc, "t") && BSON_ITER_HOLDS_DATE_TIME(&iter)) {
             time = bson_iter_time_t(&iter);
@@ -400,7 +397,7 @@ time_t mongoeng_query_metric_oldest_time(RRDDIM *rd)
 
     handle = (struct mongoeng_collect_handle *)rd->state->handle;
     ctx = handle->ctx;
-    filter = BCON_NEW("m.s", rd->rrdset->id, "m.d", rd->id);
+    filter = BCON_NEW("m.h", rd->rrdset->rrdhost->machine_guid, "m.s", rd->rrdset->id, "m.d", rd->id);
     opts = BCON_NEW("projection", "{",
                         "_id", BCON_BOOL(false),
                         "t", BCON_BOOL(true),
@@ -409,7 +406,7 @@ time_t mongoeng_query_metric_oldest_time(RRDDIM *rd)
                     "limit", BCON_INT64(1));
 
     uv_mutex_lock(&ctx->rwlock);
-    cursor = mongoc_collection_find_with_opts(rd->rrdset->rrdhost->collection, filter, opts, NULL);
+    cursor = mongoc_collection_find_with_opts(ctx->collection, filter, opts, NULL);
 
     if (mongoc_cursor_next (cursor, &doc)) {
         if(bson_iter_init_find(&iter, doc, "t") && BSON_ITER_HOLDS_DATE_TIME(&iter)) {
@@ -523,6 +520,11 @@ STORAGE_ENGINE_INSTANCE* mongoeng_init(RRDHOST *host)
         return NULL;
     }
 
+    if(!mongoeng_create_collection(ctx)) {
+        error("MongoDB mongoeng_init failed to create collection");
+        return NULL;
+    }
+
     completion_init(&ctx->mongoeng_completion);
     fatal_assert(0 == uv_thread_create(&ctx->worker_config.thread, mongoeng_worker, &ctx->worker_config));
     /* wait for worker thread to initialize */
@@ -570,8 +572,8 @@ int mongoeng_exit(struct mongoengine_instance *ctx)
 
     fatal_assert(0 == uv_thread_join(&ctx->worker_config.thread));
 
-    //mongoc_bulk_operation_destroy(ctx->op);
-    //mongoc_collection_destroy(ctx->collection);
+    mongoc_bulk_operation_destroy(ctx->op);
+    mongoc_collection_destroy(ctx->collection);
     mongoc_database_destroy(ctx->database);
     mongoc_client_destroy(ctx->mongo_client);
 

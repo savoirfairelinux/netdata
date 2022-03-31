@@ -19,10 +19,6 @@ typedef struct storage_engine_instance STORAGE_ENGINE_INSTANCE;
 typedef void *ml_host_t;
 typedef void *ml_dimension_t;
 
-typedef struct _mongoc_collection_t mongoc_collection_t;
-typedef struct _mongoc_bulk_operation_t mongoc_bulk_operation_t;
-typedef struct _bson_t bson_t;
-
 // forward declarations
 struct rrddim_volatile;
 struct rrdset_volatile;
@@ -889,10 +885,6 @@ struct rrdhost {
 #ifdef ENABLE_HTTPS
     struct netdata_ssl ssl;                         //Structure used to encrypt the connection
     struct netdata_ssl stream_ssl;                         //Structure used to encrypt the stream
-#endif
-#ifdef ENABLE_ENGINE_MONGODB
-    mongoc_collection_t *collection;
-    mongoc_bulk_operation_t *op;
 #endif
 
     netdata_mutex_t aclk_state_lock;
