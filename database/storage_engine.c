@@ -5,6 +5,9 @@
 #ifdef ENABLE_DBENGINE
 #include "engine/rrdengineapi.h"
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+#include "mongodb/dbengineapi.h"
+#endif
 
 static void dimension_destroy_freez(RRDDIM *rd) {
     freez(rd);
@@ -33,6 +36,7 @@ static RRDSET* rrdset_init_##MMODE(const char *id, const char *fullid, const cha
 SET_INIT(NONE)
 SET_INIT(ALLOC)
 SET_INIT(DBENGINE)
+SET_INIT(MONGODB)
 
 // Initialize a rrddim with calloc and the provided memory mode
 static RRDDIM* dim_init_calloc(RRDSET *st, RRD_MEMORY_MODE mode) {
@@ -50,6 +54,7 @@ static RRDDIM* rrddim_init_##MMODE(RRDSET *st, const char *id, const char *filen
 DIM_INIT(NONE)
 DIM_INIT(ALLOC)
 DIM_INIT(DBENGINE)
+DIM_INIT(MONGODB)
 
 static const struct rrddim_collect_ops im_collect_ops = {
     .init = rrddim_collect_init,
@@ -204,6 +209,43 @@ STORAGE_ENGINE engines[] = {
                 .finalize = rrdeng_load_metric_finalize,
                 .latest_time = rrdeng_metric_latest_time,
                 .oldest_time = rrdeng_metric_oldest_time
+            }
+        },
+        .instance_per_host = false,
+        .multidb_instance = NULL
+    },
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+    {
+        .id = RRD_MEMORY_MODE_MONGODB,
+        .name = RRD_MEMORY_MODE_MONGODB_NAME,
+        .api = {
+            .engine_ops = {
+                .create = mongoeng_init,
+                .exit = mongoeng_prepare_exit,
+                .destroy = mongoeng_exit
+            },
+            .set_ops = {
+                .create = rrdset_init_MONGODB,
+                .destroy = set_destroy_freez
+            },
+            .dim_ops = {
+                .create = rrddim_init_MONGODB,
+                .init = mongoeng_metric_init, //**
+                .destroy = dimension_destroy_freez,
+            },
+            .collect_ops = {
+                .init = mongoeng_store_metric_init,
+                .store_metric = mongoeng_store_metric_next,
+                .finalize = mongoeng_store_metric_finalize
+            },
+            .query_ops = {
+                .init = mongoeng_load_metric_init,
+                .next_metric = mongoeng_load_metric_next,
+                .is_finished = mongoeng_load_metric_is_finished,
+                .finalize = mongoeng_load_metric_finalize,
+                .latest_time = mongoeng_metric_latest_time,
+                .oldest_time = mongoeng_metric_oldest_time
             }
         },
         .instance_per_host = false,

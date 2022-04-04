@@ -7,6 +7,9 @@
 #ifdef ENABLE_DBENGINE
 #include "database/engine/rrdengineapi.h"
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+#include "database/mongodb/dbengineapi.h"
+#endif
 
 int netdata_zero_metrics_enabled;
 int netdata_anonymous_statistics_enabled;
@@ -549,6 +552,12 @@ static void get_netdata_configured_variables() {
        error_report("RRD_MEMORY_MODE_DBENGINE is not supported in this platform. The agent will use memory mode ram instead.");
        default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
     }
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+    mongoengine_uri = config_get(CONFIG_SECTION_GLOBAL, "mongoengine uri", mongoengine_uri);
+    mongoengine_database = config_get(CONFIG_SECTION_GLOBAL, "mongoengine database", mongoengine_database);
+    mongoengine_timeout = (int)config_get_number(CONFIG_SECTION_GLOBAL, "mongoengine timeout", mongoengine_timeout);
+    mongoengine_expiration = (int)config_get_number(CONFIG_SECTION_GLOBAL, "mongoengine expiration", mongoengine_expiration);
 #endif
     // ------------------------------------------------------------------------
 

@@ -19,6 +19,10 @@ typedef struct storage_engine_instance STORAGE_ENGINE_INSTANCE;
 typedef void *ml_host_t;
 typedef void *ml_dimension_t;
 
+typedef struct _mongoc_collection_t mongoc_collection_t;
+typedef struct _mongoc_bulk_operation_t mongoc_bulk_operation_t;
+typedef struct _bson_t bson_t;
+
 // forward declarations
 struct rrddim_volatile;
 struct rrdset_volatile;
@@ -104,7 +108,8 @@ typedef enum rrd_memory_mode {
     RRD_MEMORY_MODE_MAP  = 2,
     RRD_MEMORY_MODE_SAVE = 3,
     RRD_MEMORY_MODE_ALLOC = 4,
-    RRD_MEMORY_MODE_DBENGINE = 5
+    RRD_MEMORY_MODE_DBENGINE = 5,
+    RRD_MEMORY_MODE_MONGODB = 6
 } RRD_MEMORY_MODE;
 
 #define RRD_MEMORY_MODE_NONE_NAME "none"
@@ -113,6 +118,7 @@ typedef enum rrd_memory_mode {
 #define RRD_MEMORY_MODE_SAVE_NAME "save"
 #define RRD_MEMORY_MODE_ALLOC_NAME "alloc"
 #define RRD_MEMORY_MODE_DBENGINE_NAME "dbengine"
+#define RRD_MEMORY_MODE_MONGODB_NAME "mongodb"
 
 extern RRD_MEMORY_MODE default_rrd_memory_mode;
 
@@ -389,6 +395,10 @@ struct rrddim_volatile {
 #ifdef ENABLE_DBENGINE
     uuid_t *rrdeng_uuid;                 // database engine metric UUID
     struct pg_cache_page_index *page_index;
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+    usec_t oldest_time;
+    usec_t latest_time;
 #endif
 #ifdef ENABLE_ACLK
     int aclk_live_status;
@@ -765,7 +775,7 @@ struct rrdhost {
 
     int rrd_update_every;                           // the update frequency of the host
     long rrd_history_entries;                       // the number of history entries for the host's charts
-    RRD_MEMORY_MODE rrd_memory_mode;                // the memory more for the charts of this host
+    RRD_MEMORY_MODE rrd_memory_mode;                // the memory mode for the charts of this host
 
     char *cache_dir;                                // the directory to save RRD cache files
     char *varlib_dir;                               // the directory to save health log
@@ -877,13 +887,17 @@ struct rrdhost {
     avl_tree_lock rrdfamily_root_index;             // the host's chart families index
     avl_tree_lock rrdvar_root_index;                // the host's chart variables index
 
-    STORAGE_ENGINE_INSTANCE *rrdeng_ctx;          // DB engine instance for this host
+    STORAGE_ENGINE_INSTANCE* rrdeng_ctx;          // DB engine instance for this host
     uuid_t  host_uuid;                              // Global GUID for this host
     uuid_t  *node_id;                               // Cloud node_id
 
 #ifdef ENABLE_HTTPS
     struct netdata_ssl ssl;                         //Structure used to encrypt the connection
     struct netdata_ssl stream_ssl;                         //Structure used to encrypt the stream
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+    mongoc_collection_t *collection;
+    mongoc_bulk_operation_t *op;
 #endif
 
     netdata_mutex_t aclk_state_lock;
@@ -1099,7 +1113,7 @@ static inline void last_updated_time_align(RRDSET *st) {
 // get the timestamp of the last entry in the round robin database
 static inline time_t rrdset_last_entry_t_nolock(RRDSET *st)
 {
-    if (st->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+    if (st->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE || st->rrd_memory_mode == RRD_MEMORY_MODE_MONGODB) {
         RRDDIM *rd;
         time_t last_entry_t  = 0;
 
@@ -1127,7 +1141,7 @@ static inline time_t rrdset_last_entry_t(RRDSET *st)
 // get the timestamp of first entry in the round robin database
 static inline time_t rrdset_first_entry_t_nolock(RRDSET *st)
 {
-    if (st->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+    if (st->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE || st->rrd_memory_mode == RRD_MEMORY_MODE_MONGODB) {
         RRDDIM *rd;
         time_t first_entry_t = LONG_MAX;
 
@@ -1158,13 +1172,13 @@ static inline time_t rrdset_first_entry_t(RRDSET *st)
 
 // get the timestamp of the last entry in the round robin database
 static inline time_t rrddim_last_entry_t(RRDDIM *rd) {
-    if (rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+    if (rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE || rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_MONGODB)
         return rd->state->query_ops.latest_time(rd);
     return (time_t)rd->rrdset->last_updated.tv_sec;
 }
 
 static inline time_t rrddim_first_entry_t(RRDDIM *rd) {
-    if (rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+    if (rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE || rd->rrdset->rrd_memory_mode == RRD_MEMORY_MODE_MONGODB)
         return rd->state->query_ops.oldest_time(rd);
     return (time_t)(rd->rrdset->last_updated.tv_sec - rrdset_duration(rd->rrdset));
 }

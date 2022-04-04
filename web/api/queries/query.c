@@ -3,8 +3,10 @@
 #include "query.h"
 #include "web/api/formatters/rrd2json.h"
 #include "rrdr.h"
+#include "database/rrddim_mem.h"
 #ifdef ENABLE_DBENGINE
 #include "database/engine/rrdengineapi.h"
+#include "database/engine/rrdengine.h"
 #endif
 #include "database/rrddim_mem.h"
 
@@ -585,7 +587,7 @@ static inline void do_dimension_fixedstep(
         //storage_number n = rd->values[slot];
 #ifdef NETDATA_INTERNAL_CHECKS
         struct mem_query_handle* mem_handle = (struct mem_query_handle*)handle.handle;
-        if ((rd->rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE) &&
+        if ((rd->rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE && rd->rrd_memory_mode != RRD_MEMORY_MODE_MONGODB) &&
             (rrdset_time2slot(st, now) != (long unsigned)(mem_handle->slot))) {
             error("INTERNAL CHECK: Unaligned query for %s, database slot: %lu, expected slot: %lu", rd->id, (long unsigned)mem_handle->slot, rrdset_time2slot(st, now));
         }

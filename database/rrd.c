@@ -46,6 +46,9 @@ inline const char *rrd_memory_mode_name(RRD_MEMORY_MODE id) {
 
         case RRD_MEMORY_MODE_DBENGINE:
             return RRD_MEMORY_MODE_DBENGINE_NAME;
+
+        case RRD_MEMORY_MODE_MONGODB:
+            return RRD_MEMORY_MODE_MONGODB_NAME;
     }
 
     STORAGE_ENGINE* eng = engine_get(id);
@@ -61,6 +64,9 @@ RRD_MEMORY_MODE rrd_memory_mode_id(const char *name) {
     if (eng) {
         return eng->id;
     }
+
+    else if(unlikely(!strcmp(name, RRD_MEMORY_MODE_MONGODB_NAME)))
+        return RRD_MEMORY_MODE_MONGODB;
 
     return RRD_MEMORY_MODE_SAVE;
 }
