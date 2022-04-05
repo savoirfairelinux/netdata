@@ -214,11 +214,17 @@ int mongoeng_store_metric_finalize(RRDDIM *rd)
  * @param max_intervalp is dereferenced and set to be the largest data collection interval of all regions.
  * @return number of regions with different data collection intervals.
  */
-unsigned mongoeng_variable_step_boundaries(RRDSET *st, time_t start_time, time_t end_time)
-//, struct mongoeng_region_info **region_info_arrayp, unsigned *max_intervalp, struct context_param *context_param_list)
+unsigned mongoeng_variable_step_boundaries(RRDSET *st, time_t start_time, time_t end_time, 
+                                           struct rrdr_region_info **region_info_arrayp, unsigned *max_intervalp, struct context_param *context_param_list)
 {
     //info("MongoDB mongoeng_variable_step_boundaries %s %ld %ld", st->id, start_time, end_time);
-    return 0;
+    UNUSED(st);
+    UNUSED(start_time);
+    UNUSED(end_time);
+    UNUSED(region_info_arrayp);
+    UNUSED(max_intervalp);
+    UNUSED(context_param_list);
+    return 1;
 }
 
 /*
@@ -315,6 +321,9 @@ time_t mongoeng_metric_oldest_time(RRDDIM *rd)
 int mongoeng_metric_latest_time_by_uuid(uuid_t *dim_uuid, time_t *first_entry_t, time_t *last_entry_t)
 {
     //info("MongoDB mongoeng_metric_latest_time_by_uuid %.*s %ld %ld", 16, dim_uuid[0], *first_entry_t, *last_entry_t);
+    UNUSED(dim_uuid);
+    UNUSED(first_entry_t);
+    UNUSED(last_entry_t);
     struct mongoengine_instance *ctx;
 
     ctx = get_mongoeng_ctx_from_host(localhost);
@@ -487,4 +496,54 @@ void mongoeng_prepare_exit(struct mongoengine_instance *ctx)
 
     //metalog_prepare_exit(ctx->parent.metalog_ctx);
 }
+
+RRDR* mongoeng_query(
+        RRDSET *st
+        , long points_requested
+        , long long after_requested
+        , long long before_requested
+        , RRDR_GROUPING group_method
+        , long resampling_time_requested
+        , RRDR_OPTIONS options
+        , const char *dimensions
+        , int update_every
+        , time_t first_entry_t
+        , time_t last_entry_t
+        , int absolute_period_requested
+        , struct context_param *context_param_list)
+{
+        struct rrdr_region_info *region_info_array;
+        unsigned regions, max_interval;
+
+        /* This call takes the chart read-lock */
+        regions = mongoeng_variable_step_boundaries(st, after_requested, before_requested,
+                                                  &region_info_array, &max_interval, context_param_list);
+        if (1 == regions) {
+            if (region_info_array) {
+                if (update_every != region_info_array[0].update_every) {
+                    update_every = region_info_array[0].update_every;
+                    /* recalculate query alignment */
+                    absolute_period_requested =
+                            rrdr_convert_before_after_to_absolute(&after_requested, &before_requested, update_every,
+                                                                  first_entry_t, last_entry_t, options);
+                }
+                freez(region_info_array);
+            }
+            return rrd2rrdr_fixedstep(st, points_requested, after_requested, before_requested, group_method,
+                                      resampling_time_requested, options, dimensions, update_every,
+                                      first_entry_t, last_entry_t, absolute_period_requested, context_param_list);
+        } else {
+            if (update_every != (uint16_t)max_interval) {
+                update_every = (uint16_t) max_interval;
+                /* recalculate query alignment */
+                absolute_period_requested = rrdr_convert_before_after_to_absolute(&after_requested, &before_requested,
+                                                                                  update_every, first_entry_t,
+                                                                                  last_entry_t, options);
+            }
+            return rrd2rrdr_variablestep(st, points_requested, after_requested, before_requested, group_method,
+                                         resampling_time_requested, options, dimensions, update_every,
+                                         first_entry_t, last_entry_t, absolute_period_requested, region_info_array, context_param_list);
+        }
+}
+
 

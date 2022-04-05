@@ -227,11 +227,12 @@ STORAGE_ENGINE engines[] = {
             },
             .set_ops = {
                 .create = rrdset_init_MONGODB,
-                .destroy = set_destroy_freez
+                .destroy = set_destroy_freez,
+                .query = mongoeng_query
             },
             .dim_ops = {
                 .create = rrddim_init_MONGODB,
-                .init = mongoeng_metric_init, //**
+                .init = mongoeng_metric_init,
                 .destroy = dimension_destroy_freez,
             },
             .collect_ops = {
