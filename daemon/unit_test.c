@@ -4,6 +4,10 @@
 #ifdef ENABLE_DBENGINE
 #include "database/engine/rrdengineapi.h"
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+#include "database/mongodb/dbengineapi.h"
+#include <mongoc.h>
+#endif
 
 static int check_number_printing(void) {
     struct {
@@ -1535,7 +1539,6 @@ int test_sqlite(void) {
 }
 
 
-#ifdef ENABLE_DBENGINE
 static inline void rrddim_set_by_pointer_fake_time(RRDDIM *rd, collected_number value, time_t now)
 {
     rd->last_collected_time.tv_sec = now;
@@ -1549,7 +1552,7 @@ static inline void rrddim_set_by_pointer_fake_time(RRDDIM *rd, collected_number 
     if(unlikely(v > rd->collected_value_max)) rd->collected_value_max = v;
 }
 
-static RRDHOST *dbengine_rrdhost_find_or_create(char *name)
+static RRDHOST *test_rrdhost_find_or_create(char *name, enum rrd_memory_mode memory_mode)
 {
     /* We don't want to drop metrics when generating load, we prefer to block data generation itself */
     rrdeng_drop_metrics_under_page_cache_pressure = 0;
@@ -1567,7 +1570,7 @@ static RRDHOST *dbengine_rrdhost_find_or_create(char *name)
             , program_version
             , default_rrd_update_every
             , default_rrd_history_entries
-            , RRD_MEMORY_MODE_DBENGINE
+            , memory_mode
             , default_health_enabled
             , default_rrdpush_enabled
             , default_rrdpush_destination
@@ -1590,21 +1593,21 @@ static const int REGION_POINTS[REGIONS] = {
 };
 static const int QUERY_BATCH = 4096;
 
-static void test_dbengine_create_charts(RRDHOST *host, RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
-                                        int update_every)
+static void test_create_charts(RRDHOST *host, RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
+                               int update_every, int charts, int dims)
 {
     int i, j;
     char name[101];
 
-    for (i = 0 ; i < CHARTS ; ++i) {
-        snprintfz(name, 100, "dbengine-chart-%d", i);
+    for (i = 0 ; i < charts ; ++i) {
+        snprintfz(name, 100, "test-chart-%d", i);
 
         // create the chart
         st[i] = rrdset_create(host, "netdata", name, name, "netdata", NULL, "Unit Testing", "a value", "unittest",
                               NULL, 1, update_every, RRDSET_TYPE_LINE);
         rrdset_flag_set(st[i], RRDSET_FLAG_DEBUG);
         rrdset_flag_set(st[i], RRDSET_FLAG_STORE_FIRST);
-        for (j = 0 ; j < DIMS ; ++j) {
+        for (j = 0 ; j < dims ; ++j) {
             snprintfz(name, 100, "dim-%d", j);
 
             rd[i][j] = rrddim_add(st[i], name, NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
@@ -1612,33 +1615,27 @@ static void test_dbengine_create_charts(RRDHOST *host, RRDSET *st[CHARTS], RRDDI
     }
 
     // Initialize DB with the very first entries
-    for (i = 0 ; i < CHARTS ; ++i) {
-        for (j = 0 ; j < DIMS ; ++j) {
+    for (i = 0 ; i < charts ; ++i) {
+        for (j = 0 ; j < dims ; ++j) {
             rd[i][j]->last_collected_time.tv_sec =
             st[i]->last_collected_time.tv_sec = st[i]->last_updated.tv_sec = 2 * API_RELATIVE_TIME_MAX - 1;
             rd[i][j]->last_collected_time.tv_usec =
             st[i]->last_collected_time.tv_usec = st[i]->last_updated.tv_usec = 0;
         }
     }
-    for (i = 0 ; i < CHARTS ; ++i) {
+    for (i = 0 ; i < charts ; ++i) {
         st[i]->usec_since_last_update = USEC_PER_SEC;
 
-        for (j = 0; j < DIMS; ++j) {
+        for (j = 0; j < dims; ++j) {
             rrddim_set_by_pointer_fake_time(rd[i][j], 69, 2 * API_RELATIVE_TIME_MAX); // set first value to 69
         }
         rrdset_done(st[i]);
     }
-    // Fluh pages for subsequent real values
-    for (i = 0 ; i < CHARTS ; ++i) {
-        for (j = 0; j < DIMS; ++j) {
-            rrdeng_store_metric_flush_current_page(rd[i][j]);
-        }
-    }
 }
 
 // Feeds the database region with test data, returns last timestamp of region
-static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
-                                           int current_region, time_t time_start)
+static time_t test_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
+                                  int current_region, time_t time_start, int charts, int dims)
 {
     time_t time_now;
     int i, j, c, update_every;
@@ -1647,21 +1644,22 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
     update_every = REGION_UPDATE_EVERY[current_region];
     time_now = time_start;
     // feed it with the test data
-    for (i = 0 ; i < CHARTS ; ++i) {
-        for (j = 0 ; j < DIMS ; ++j) {
+    for (i = 0 ; i < charts ; ++i) {
+        for (j = 0 ; j < dims ; ++j) {
             rd[i][j]->last_collected_time.tv_sec =
             st[i]->last_collected_time.tv_sec = st[i]->last_updated.tv_sec = time_now;
             rd[i][j]->last_collected_time.tv_usec =
             st[i]->last_collected_time.tv_usec = st[i]->last_updated.tv_usec = 0;
+            rd[i][j]->update_every = update_every;
         }
     }
     for (c = 0; c < REGION_POINTS[current_region] ; ++c) {
         time_now += update_every; // time_now = start + (c + 1) * update_every
-        for (i = 0 ; i < CHARTS ; ++i) {
+        for (i = 0 ; i < charts ; ++i) {
             st[i]->usec_since_last_update = USEC_PER_SEC * update_every;
 
-            for (j = 0; j < DIMS; ++j) {
-                next = ((collected_number)i * DIMS) * REGION_POINTS[current_region] +
+            for (j = 0; j < dims; ++j) {
+                next = ((collected_number)i * dims) * REGION_POINTS[current_region] +
                        j * REGION_POINTS[current_region] + c;
                 rrddim_set_by_pointer_fake_time(rd[i][j], next, time_now);
             }
@@ -1672,12 +1670,12 @@ static time_t test_dbengine_create_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS
 }
 
 // Checks the metric data for the given region, returns number of errors
-static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
-                                       int current_region, time_t time_start)
+static int test_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS], 
+                              int current_region, time_t time_now, int i, int c, char *engine_name, int dims)
 {
     uint8_t same;
-    time_t time_now, time_retrieved;
-    int i, j, k, c, errors, update_every;
+    time_t time_retrieved;
+    int j, k, errors, update_every;
     collected_number last;
     calculated_number value, expected;
     storage_number n;
@@ -1686,43 +1684,97 @@ static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DI
     update_every = REGION_UPDATE_EVERY[current_region];
     errors = 0;
 
+    for (j = 0; j < dims; ++j) {
+        rd[i][j]->state->query_ops.init(rd[i][j], &handle, time_now, time_now + QUERY_BATCH * update_every);
+        for (k = 0; k < QUERY_BATCH; ++k) {
+            last = ((collected_number)i * dims) * REGION_POINTS[current_region] +
+                    j * REGION_POINTS[current_region] + c + k;
+            expected = unpack_storage_number(pack_storage_number((calculated_number)last, SN_DEFAULT_FLAGS));
+
+            n = rd[i][j]->state->query_ops.next_metric(&handle, &time_retrieved);
+            value = unpack_storage_number(n);
+
+            same = (calculated_number_round(value) == calculated_number_round(expected)) ? 1 : 0;
+            if(!same) {
+                fprintf(stderr, "    %s-engine unittest %s/%s: at %lu secs, expecting value "
+                                CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", ### E R R O R ###\n",
+                        engine_name, st[i]->name, rd[i][j]->name, (unsigned long)time_now + k * update_every, expected, value);
+                errors++;
+            }
+            if(time_retrieved != time_now + k * update_every) {
+                fprintf(stderr, "    %s-engine unittest %s/%s: at %lu secs, found timestamp %lu ### E R R O R ###\n",
+                        engine_name, st[i]->name, rd[i][j]->name, (unsigned long)time_now + k * update_every, (unsigned long)time_retrieved);
+                errors++;
+            }
+        }
+        rd[i][j]->state->query_ops.finalize(&handle);
+    }
+
+    return errors;
+}
+
+static int test_dbengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
+                                       int current_region, time_t time_start)
+{
+    time_t time_now;
+    int i, c, errors, update_every;
+
+    update_every = REGION_UPDATE_EVERY[current_region];
+    errors = 0;
+
     // check the result
     for (c = 0; c < REGION_POINTS[current_region] ; c += QUERY_BATCH) {
         time_now = time_start + (c + 1) * update_every;
         for (i = 0 ; i < CHARTS ; ++i) {
-            for (j = 0; j < DIMS; ++j) {
-                rd[i][j]->state->query_ops.init(rd[i][j], &handle, time_now, time_now + QUERY_BATCH * update_every);
-                for (k = 0; k < QUERY_BATCH; ++k) {
-                    last = ((collected_number)i * DIMS) * REGION_POINTS[current_region] +
-                           j * REGION_POINTS[current_region] + c + k;
-                    expected = unpack_storage_number(pack_storage_number((calculated_number)last, SN_DEFAULT_FLAGS));
+            errors += test_check_metrics(st, rd, current_region, time_now, i, c, "DB", DIMS);
+        }
+    }
+    return errors;
+}
 
-                    n = rd[i][j]->state->query_ops.next_metric(&handle, &time_retrieved);
-                    value = unpack_storage_number(n);
+static int test_mongoengine_check_metrics(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
+                                          int current_region, time_t time_start, int charts, int dims)
+{
+    time_t time_now;
+    int i, c, errors, update_every;
+    struct mongoengine_instance *ctx;
+    struct mongoeng_cmd cmd;
+    struct completion compl;
+    struct set_query set_query;
 
-                    same = (calculated_number_round(value) == calculated_number_round(expected)) ? 1 : 0;
-                    if(!same) {
-                        fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, expecting value "
-                                        CALCULATED_NUMBER_FORMAT ", found " CALCULATED_NUMBER_FORMAT ", ### E R R O R ###\n",
-                                st[i]->name, rd[i][j]->name, (unsigned long)time_now + k * update_every, expected, value);
-                        errors++;
-                    }
-                    if(time_retrieved != time_now + k * update_every) {
-                        fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, found timestamp %lu ### E R R O R ###\n",
-                                st[i]->name, rd[i][j]->name, (unsigned long)time_now + k * update_every, (unsigned long)time_retrieved);
-                        errors++;
-                    }
-                }
-                rd[i][j]->state->query_ops.finalize(&handle);
-            }
+    update_every = REGION_UPDATE_EVERY[current_region];
+    errors = 0;
+
+    // check the result
+    for (c = 0; c < REGION_POINTS[current_region] ; c += QUERY_BATCH) {
+        time_now = time_start + (c + 1) * update_every;
+        for (i = 0 ; i < charts ; ++i) {
+            ctx = (struct mongoengine_instance *) st[i]->rrdhost->rrdeng_ctx;
+
+            set_query.st = st[i];
+            set_query.start = time_now;
+            set_query.end = time_now + QUERY_BATCH * update_every;
+
+            completion_init(&compl);
+
+            cmd.opcode = MONGOENGINE_QUERY_SET;
+            cmd.completion = &compl;
+            cmd.set_query = &set_query;
+
+            mongoeng_enq_cmd(&ctx->worker_config, &cmd);
+            completion_wait_for(&compl);
+            completion_destroy(&compl);
+
+
+            errors += test_check_metrics(st, rd, current_region, time_now, i, c, "Mongo", dims);
         }
     }
     return errors;
 }
 
 // Check rrdr transformations
-static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
-                                    int current_region, time_t time_start, time_t time_end)
+static int test_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS],
+                           int current_region, time_t time_start, time_t time_end, char *engine_name, int charts, int dims)
 {
     uint8_t same;
     time_t time_now, time_retrieved;
@@ -1734,10 +1786,10 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
     errors = 0;
     update_every = REGION_UPDATE_EVERY[current_region];
     long points = (time_end - time_start) / update_every;
-    for (i = 0 ; i < CHARTS ; ++i) {
+    for (i = 0 ; i < charts ; ++i) {
         RRDR *r = rrd2rrdr(st[i], points, time_start + update_every, time_end, RRDR_GROUPING_AVERAGE, 0, 0, NULL, NULL);
         if (!r) {
-            fprintf(stderr, "    DB-engine unittest %s: empty RRDR ### E R R O R ###\n", st[i]->name);
+            fprintf(stderr, "    %s-engine unittest %s: empty RRDR ### E R R O R ###\n", engine_name, st[i]->name);
             return ++errors;
         } else {
             assert(r->st == st[i]);
@@ -1752,19 +1804,19 @@ static int test_dbengine_check_rrdr(RRDSET *st[CHARTS], RRDDIM *rd[CHARTS][DIMS]
                     value = cn[j];
                     assert(rd[i][j] == d);
 
-                    last = i * DIMS * REGION_POINTS[current_region] + j * REGION_POINTS[current_region] + c + 1;
+                    last = i * dims * REGION_POINTS[current_region] + j * REGION_POINTS[current_region] + c + 1;
                     expected = unpack_storage_number(pack_storage_number((calculated_number)last, SN_DEFAULT_FLAGS));
 
                     same = (calculated_number_round(value) == calculated_number_round(expected)) ? 1 : 0;
                     if(!same) {
-                        fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, expecting value "
+                        fprintf(stderr, "    %s-engine unittest %s/%s: at %lu secs, expecting value "
                                         CALCULATED_NUMBER_FORMAT ", RRDR found " CALCULATED_NUMBER_FORMAT ", ### E R R O R ###\n",
-                                st[i]->name, rd[i][j]->name, (unsigned long)time_now, expected, value);
+                                engine_name, st[i]->name, rd[i][j]->name, (unsigned long)time_now, expected, value);
                         errors++;
                     }
                     if(time_retrieved != time_now) {
-                        fprintf(stderr, "    DB-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
-                                st[i]->name, rd[i][j]->name, (unsigned long)time_now, (unsigned long)time_retrieved);
+                        fprintf(stderr, "    %s-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
+                                engine_name, st[i]->name, rd[i][j]->name, (unsigned long)time_now, (unsigned long)time_retrieved);
                         errors++;
                     }
                 }
@@ -1789,16 +1841,22 @@ int test_dbengine(void)
     default_rrd_memory_mode = RRD_MEMORY_MODE_DBENGINE;
 
     fprintf(stderr, "Initializing localhost with hostname 'unittest-dbengine'");
-    host = dbengine_rrdhost_find_or_create("unittest-dbengine");
+    host = test_rrdhost_find_or_create("unittest-dbengine", RRD_MEMORY_MODE_DBENGINE);
     if (NULL == host)
         return 1;
 
     current_region = 0; // this is the first region of data
     update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 2 seconds
-    test_dbengine_create_charts(host, st, rd, update_every);
+    test_create_charts(host, st, rd, update_every, CHARTS, DIMS);
+    // Flush pages for subsequent real values
+    for (i = 0 ; i < CHARTS ; ++i) {
+        for (j = 0; j < DIMS; ++j) {
+            rrdeng_store_metric_flush_current_page(rd[i][j]);
+        }
+    }
 
     time_start[current_region] = 2 * API_RELATIVE_TIME_MAX;
-    time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], CHARTS, DIMS);
 
     errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
     if (errors)
@@ -1817,7 +1875,7 @@ int test_dbengine(void)
     time_start[current_region] = time_end[current_region - 1] + update_every;
     if (0 != time_start[current_region] % update_every) // align to update_every
         time_start[current_region] += update_every - time_start[current_region] % update_every;
-    time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], CHARTS, DIMS);
 
     errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
     if (errors)
@@ -1836,14 +1894,14 @@ int test_dbengine(void)
     time_start[current_region] = time_end[current_region - 1] + update_every;
     if (0 != time_start[current_region] % update_every) // align to update_every
         time_start[current_region] += update_every - time_start[current_region] % update_every;
-    time_end[current_region] = test_dbengine_create_metrics(st,rd, current_region, time_start[current_region]);
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], CHARTS, DIMS);
 
     errors = test_dbengine_check_metrics(st, rd, current_region, time_start[current_region]);
     if (errors)
         goto error_out;
 
     for (current_region = 0 ; current_region < REGIONS ; ++current_region) {
-        errors = test_dbengine_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region]);
+        errors = test_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region], "DB", CHARTS, DIMS);
         if (errors)
             goto error_out;
     }
@@ -2006,7 +2064,7 @@ void generate_dbengine_dataset(unsigned history_seconds)
     error_log_limit_unlimited();
     fprintf(stderr, "Initializing localhost with hostname 'dbengine-dataset'");
 
-    host = dbengine_rrdhost_find_or_create("dbengine-dataset");
+    host = test_rrdhost_find_or_create("dbengine-dataset", RRD_MEMORY_MODE_DBENGINE);
     if (NULL == host)
         return;
 
@@ -2189,7 +2247,7 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
 
     fprintf(stderr, "Initializing localhost with hostname 'dbengine-stress-test'\n");
 
-    host = dbengine_rrdhost_find_or_create("dbengine-stress-test");
+    host = test_rrdhost_find_or_create("dbengine-stress-test", RRD_MEMORY_MODE_DBENGINE);
     if (NULL == host)
         return;
 
@@ -2294,4 +2352,168 @@ void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsi
     rrd_unlock();
 }
 
-#endif
+int test_mongoengine(void)
+{
+    int i, j, errors, update_every, current_region;
+    RRDHOST *host = NULL;
+    RRDSET *st[CHARTS];
+    RRDDIM *rd[CHARTS][DIMS];
+    time_t time_start[REGIONS], time_end[REGIONS];
+    struct mongoengine_instance *ctx;
+    struct mongoeng_cmd cmd;
+    struct completion compl;
+
+    int charts = 4;
+    int dims = 4;
+
+    error_log_limit_unlimited();
+    fprintf(stderr, "\nRunning Mongo-engine test\n");
+
+    default_rrd_memory_mode = RRD_MEMORY_MODE_MONGODB;
+    mongoengine_uri = "mongodb://localhost:27017/?compressors=zstd,zlib,snappy";
+    mongoengine_database = "netdata-test";
+    mongoengine_timeout = 5000;
+    mongoengine_expiration = 0;
+
+    fprintf(stderr, "Initializing localhost with hostname 'unittest-mongoengine'");
+    host = test_rrdhost_find_or_create("unittest-mongoengine", RRD_MEMORY_MODE_MONGODB);
+    if (NULL == host)
+        return 1;
+
+    ctx = (struct mongoengine_instance*)host->rrdeng_ctx;
+    if(!ctx) {
+        fprintf(stderr, "Mongo server context failed to initialize.");
+        return 1;
+    }
+
+    mongoc_database_drop (ctx->database, NULL);
+    
+    current_region = 0; // this is the first region of data
+    update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 2 seconds
+    test_create_charts(host, st, rd, update_every, charts, dims);
+
+    time_start[current_region] = 2 * API_RELATIVE_TIME_MAX;
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], charts, dims);
+
+    // wait for the writes to be queued and then processed
+    sleep(1); 
+    completion_init(&compl);
+    cmd.opcode = MONGOENGINE_TEST;
+    cmd.completion = &compl;
+    mongoeng_enq_cmd(&ctx->worker_config, &cmd);
+    completion_wait_for(&compl);
+    completion_destroy(&compl);
+    
+    errors = test_mongoengine_check_metrics(st, rd, current_region, time_start[current_region], charts, dims);
+    if (errors)
+        goto error_out;
+
+    current_region = 1; //this is the second region of data
+    update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 3 seconds
+
+    for (i = 0 ; i < charts ; ++i) {
+        st[i]->update_every = update_every;
+    }
+
+    time_start[current_region] = time_end[current_region - 1] + update_every;
+    if (0 != time_start[current_region] % update_every) // align to update_every
+        time_start[current_region] += update_every - time_start[current_region] % update_every;
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], charts, dims);
+
+    sleep(1);
+    completion_init(&compl);
+    cmd.opcode = MONGOENGINE_TEST;
+    cmd.completion = &compl;
+    mongoeng_enq_cmd(&ctx->worker_config, &cmd);
+    completion_wait_for(&compl);
+    completion_destroy(&compl);
+
+    errors = test_mongoengine_check_metrics(st, rd, current_region, time_start[current_region], charts, dims);
+    if (errors)
+        goto error_out;
+
+    current_region = 2; //this is the third region of data
+    update_every = REGION_UPDATE_EVERY[current_region]; // set data collection frequency to 1 seconds
+
+    for (i = 0 ; i < charts ; ++i) {
+        st[i]->update_every = update_every;
+    }
+
+    time_start[current_region] = time_end[current_region - 1] + update_every;
+    if (0 != time_start[current_region] % update_every) // align to update_every
+        time_start[current_region] += update_every - time_start[current_region] % update_every;
+    time_end[current_region] = test_create_metrics(st,rd, current_region, time_start[current_region], charts, dims);
+
+    sleep(1);
+    completion_init(&compl);
+    cmd.opcode = MONGOENGINE_TEST;
+    cmd.completion = &compl;
+    mongoeng_enq_cmd(&ctx->worker_config, &cmd);
+    completion_wait_for(&compl);
+    completion_destroy(&compl);
+    
+    errors = test_mongoengine_check_metrics(st, rd, current_region, time_start[current_region], charts, dims);
+    if (errors)
+        goto error_out;
+
+    for (current_region = 0 ; current_region < REGIONS ; ++current_region) {
+        errors = test_check_rrdr(st, rd, current_region, time_start[current_region], time_end[current_region], "Mongo", charts, dims);
+        if (errors)
+            goto error_out;
+    }
+
+    current_region = 1;
+    update_every = REGION_UPDATE_EVERY[current_region]; // use the maximum update_every = 3
+    errors = 0;
+    long points = (time_end[REGIONS - 1] - time_start[0]) / update_every; // cover all time regions with RRDR
+    long point_offset = (time_start[current_region] - time_start[0]) / update_every;
+    for (i = 0 ; i < charts ; ++i) {
+        RRDR *r = rrd2rrdr(st[i], points, time_start[0] + update_every, time_end[REGIONS - 1], RRDR_GROUPING_AVERAGE, 0, 0, NULL, NULL);
+        if (!r) {
+            fprintf(stderr, "    Mongo-engine unittest %s: empty RRDR ### E R R O R ###\n", st[i]->name);
+            ++errors;
+        } else {
+            long c;
+
+            assert(r->st == st[i]);
+            // test current region values only, since they must be left unchanged
+            for (c = point_offset ; c < point_offset + rrdr_rows(r) / REGIONS / 2 ; ++c) {
+                RRDDIM *d;
+                time_t time_now = time_start[current_region] + (c - point_offset + 2) * update_every;
+                time_t time_retrieved = r->t[c];
+
+                // for each dimension
+                for(j = 0, d = r->st->dimensions ; d && j < r->d ; ++j, d = d->next) {
+                    calculated_number *cn = &r->v[ c * r->d ];
+                    calculated_number value = cn[j];
+                    assert(rd[i][j] == d);
+
+                    collected_number last = i * dims * REGION_POINTS[current_region] + j * REGION_POINTS[current_region] + c - point_offset + 1;
+                    calculated_number expected = unpack_storage_number(pack_storage_number((calculated_number)last, SN_DEFAULT_FLAGS));
+
+                    uint8_t same = (calculated_number_round(value) == calculated_number_round(expected)) ? 1 : 0;
+                    if(!same) {
+                        fprintf(stderr, "    Mongo-engine unittest %s/%s: at %lu secs, expecting value "
+                                        CALCULATED_NUMBER_FORMAT ", RRDR found " CALCULATED_NUMBER_FORMAT ", ### E R R O R ###\n",
+                                st[i]->name, rd[i][j]->name, (unsigned long)time_now, expected, value);
+                        errors++;
+                    }
+                    if(time_retrieved != time_now) {
+                        fprintf(stderr, "    Mongo-engine unittest %s/%s: at %lu secs, found RRDR timestamp %lu ### E R R O R ###\n",
+                                st[i]->name, rd[i][j]->name, (unsigned long)time_now, (unsigned long)time_retrieved);
+                        errors++;
+                    }
+                }
+            }
+            rrdr_free(r);
+        }
+    }
+error_out:
+    mongoc_database_drop (ctx->database, NULL);
+    rrd_wrlock();
+    mongoeng_prepare_exit(ctx);
+    mongoeng_exit(ctx);
+    rrd_unlock();
+
+    return errors;
+}

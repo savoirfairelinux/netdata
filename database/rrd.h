@@ -33,6 +33,10 @@ struct rrdeng_page_descr;
 struct rrdengine_instance;
 struct pg_cache_page_index;
 #endif
+#ifdef ENABLE_ENGINE_MONGODB
+struct mongoeng_dim_data;
+struct mongoeng_host_data;
+#endif
 
 #include "daemon/common.h"
 #include "web/api/queries/query.h"
@@ -397,8 +401,7 @@ struct rrddim_volatile {
     struct pg_cache_page_index *page_index;
 #endif
 #ifdef ENABLE_ENGINE_MONGODB
-    usec_t oldest_time;
-    usec_t latest_time;
+    struct mongoeng_dim_data *mongoeng_data;
 #endif
 #ifdef ENABLE_ACLK
     int aclk_live_status;
@@ -896,8 +899,7 @@ struct rrdhost {
     struct netdata_ssl stream_ssl;                         //Structure used to encrypt the stream
 #endif
 #ifdef ENABLE_ENGINE_MONGODB
-    mongoc_collection_t *collection;
-    mongoc_bulk_operation_t *op;
+    struct mongoeng_host_data *mongoeng_data;
 #endif
 
     netdata_mutex_t aclk_state_lock;

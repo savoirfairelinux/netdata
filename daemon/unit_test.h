@@ -15,7 +15,9 @@ extern int test_dbengine(void);
 extern void generate_dbengine_dataset(unsigned history_seconds);
 extern void dbengine_stress_test(unsigned TEST_DURATION_SEC, unsigned DSET_CHARTS, unsigned QUERY_THREADS,
                                  unsigned RAMP_UP_SECONDS, unsigned PAGE_CACHE_MB, unsigned DISK_SPACE_MB);
-
+#endif
+#ifdef ENABLE_ENGINE_MONGODB
+extern int test_mongoengine(void);
 #endif
 
 #endif /* NETDATA_UNIT_TEST_H */

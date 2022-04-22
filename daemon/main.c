@@ -806,6 +806,7 @@ int main(int argc, char **argv) {
                         }
 
                         if(strcmp(optarg, "unittest") == 0) {
+
                             if (unit_test_static_threads())
                                 return 1;
                             if (unit_test_buffer())
@@ -834,6 +835,14 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
                             return 0;
                         }
+#ifdef ENABLE_ENGINE_MONGODB
+                        // requires a mongo server available on localhost:27017
+                        else if(strcmp(optarg, "mongoenginetest") == 0) {
+                            if(test_mongoengine()) return 1;
+                            fprintf(stderr, "\n\nMONGO TESTS PASSED\n\n");
+                            return 0;
+                        }
+#endif                        
 #ifdef ENABLE_ML_TESTS
                         else if(strcmp(optarg, "mltest") == 0) {
                             return test_ml(argc, argv);

@@ -16,65 +16,52 @@
 struct mongoengine_instance;
 
 struct mongoeng_collect_handle {
-    // struct mongoeng_page_descr *descr, *prev_descr;
-    // unsigned long page_correlation_id;
-    struct mongoengine_instance *ctx;
-    // mongoc_collection_t *collection;
-    // set to 1 when this dimension is not page aligned with the other dimensions in the chart
-    // uint8_t unaligned_page;
-    // struct bson_t* page;
-}; // state the database engine uses
-
-struct mongoeng_query_data {
-    time_t time;
-    storage_number value;
-    struct mongoeng_query_data *next;
+    struct mongoeng_host_data *host_data;
 };
+
 struct mongoeng_query_handle {
-    //struct rrdeng_page_descr *descr;
-    struct mongoengine_instance *ctx;
-    //struct pg_cache_page_index *page_index;
-    time_t next_page_time;
-    time_t now;
-    unsigned position;
-    unsigned count;
-    struct mongoeng_query_data *data;
+    unsigned region_index;
+    unsigned value_index;
+    struct mongoeng_dim_data *data;
 };
-
-
-typedef enum {
-    MONGOENGINE_STATUS_UNINITIALIZED = 0,
-    MONGOENGINE_STATUS_INITIALIZING,
-    MONGOENGINE_STATUS_INITIALIZED
-} mongoengine_state_t;
 
 enum mongoengine_opcode {
     /* can be used to return empty status or flush the command queue */
     MONGOENGINE_NOOP = 0,
 
-    MONGOENGINE_QUERY_METRIC,
+    MONGOENGINE_QUERY_SET,
     MONGOENGINE_QUERY_TIME_LATEST,
     MONGOENGINE_QUERY_TIME_OLDEST,
     MONGOENGINE_BULK_WRITE,
-    MONGOENGINE_CREATE_COLLECTION, // wouldn't be needed in single table architecture
+    MONGOENGINE_CREATE_COLLECTION,
     MONGOENGINE_SHUTDOWN,
     MONGOENGINE_QUIESCE,
+    MONGOENGINE_TEST,
 
     MONGOENGINE_MAX_OPCODE
 };
 
-#define RRDENG_CMD_Q_MAX_SIZE (2048)
+#define DBENG_CMD_Q_MAX_SIZE (2048)
+        
+struct set_query {
+    RRDSET *st;
+    long long start;
+    long long end;
+};
 
 struct mongoeng_cmd {
     enum mongoengine_opcode opcode;
     struct completion *completion;
-    struct rrddim_query_handle *handle;
-    RRDDIM *rd;
+    union {        
+        struct rrddim_query_handle *handle;
+        RRDDIM *rd;
+        struct set_query *set_query;
+    };
 };
 
 struct mongoeng_cmdqueue {
     unsigned head, tail;
-    struct mongoeng_cmd cmd_array[RRDENG_CMD_Q_MAX_SIZE];
+    struct mongoeng_cmd cmd_array[DBENG_CMD_Q_MAX_SIZE];
 };
 
 struct mongoengine_worker_config {
@@ -83,16 +70,6 @@ struct mongoengine_worker_config {
     uv_thread_t thread;
     uv_loop_t* loop;
     uv_async_t async;
-
-    /* file deletion thread */
-    uv_thread_t *now_deleting_files;
-    unsigned long cleanup_thread_deleting_files; /* set to 0 when now_deleting_files is still running */
-
-    /* dirty page deletion thread */
-    uv_thread_t *now_invalidating_dirty_pages;
-    /* set to 0 when now_invalidating_dirty_pages is still running */
-    unsigned long cleanup_thread_invalidating_dirty_pages;
-    unsigned inflight_dirty_pages;
 
     /* FIFO command queue */
     uv_mutex_t cmd_mutex;
@@ -108,35 +85,7 @@ struct mongoengine_worker_config {
  * They only describe operations since DB engine instance load time.
  */
 struct mongoengine_statistics {
-    /*rrdeng_stats_t metric_API_producers;
-    rrdeng_stats_t metric_API_consumers;
-    rrdeng_stats_t pg_cache_insertions;
-    rrdeng_stats_t pg_cache_deletions;
-    rrdeng_stats_t pg_cache_hits;
-    rrdeng_stats_t pg_cache_misses;
-    rrdeng_stats_t pg_cache_backfills;
-    rrdeng_stats_t pg_cache_evictions;
-    rrdeng_stats_t before_decompress_bytes;
-    rrdeng_stats_t after_decompress_bytes;
-    rrdeng_stats_t before_compress_bytes;
-    rrdeng_stats_t after_compress_bytes;
-    rrdeng_stats_t io_write_bytes;
-    rrdeng_stats_t io_write_requests;
-    rrdeng_stats_t io_read_bytes;
-    rrdeng_stats_t io_read_requests;
-    rrdeng_stats_t io_write_extent_bytes;
-    rrdeng_stats_t io_write_extents;
-    rrdeng_stats_t io_read_extent_bytes;
-    rrdeng_stats_t io_read_extents;
-    rrdeng_stats_t datafile_creations;
-    rrdeng_stats_t datafile_deletions;
-    rrdeng_stats_t journalfile_creations;
-    rrdeng_stats_t journalfile_deletions;
-    rrdeng_stats_t page_cache_descriptors;
-    rrdeng_stats_t io_errors;
-    rrdeng_stats_t fs_errors;
-    rrdeng_stats_t pg_cache_over_half_dirty_events;
-    rrdeng_stats_t flushing_pressure_page_deletions;*/
+    // TODO
 };
 
 #define NO_QUIESCE  (0) /* initial state when all operations function normally */
@@ -152,21 +101,18 @@ struct mongoengine_instance {
     struct mongoengine_worker_config worker_config;
     struct completion mongoeng_completion;
     RRDHOST *host; /* the legacy host, or NULL for multi-host DB */
-    uint64_t disk_space;
-    uint64_t max_disk_space;
-    unsigned last_fileno; /* newest index of datafile and journalfile */
-
+    
     uint8_t quiesce; /* set to SET_QUIESCE before shutdown of the engine */
 
-    uv_mutex_t bulk_write_lock; // should be in host now
     uv_mutex_t client_lock; // could be removed in favor of connection pooling
     mongoc_client_t* mongo_client;
     mongoc_database_t* database;
 
+    uv_mutex_t collection_create_lock; // only needed for collection creation in metric init
+
     struct mongoengine_statistics stats;
 };
 
-extern void mongoeng_test_quota(struct mongoengine_worker_config* wc);
 extern void mongoeng_worker(void* arg);
 extern void mongoeng_enq_cmd(struct mongoengine_worker_config* wc, struct mongoeng_cmd *cmd);
 extern struct mongoeng_cmd mongoeng_deq_cmd(struct mongoengine_worker_config* wc);

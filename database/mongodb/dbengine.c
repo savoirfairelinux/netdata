@@ -6,7 +6,6 @@
 
 void mongoeng_init_cmd_queue(struct mongoengine_worker_config* wc)
 {
-    //info"MongoDB mongoeng_init_cmd_queue");
     wc->cmd_queue.head = wc->cmd_queue.tail = 0;
     wc->queue_size = 0;
     fatal_assert(0 == uv_cond_init(&wc->cmd_cond));
@@ -15,18 +14,17 @@ void mongoeng_init_cmd_queue(struct mongoengine_worker_config* wc)
 
 void mongoeng_enq_cmd(struct mongoengine_worker_config* wc, struct mongoeng_cmd *cmd)
 {
-    //info"MongoDB mongoeng_enq_cmd. %u", cmd->opcode);
     unsigned queue_size;
 
     /* wait for free space in queue */
     uv_mutex_lock(&wc->cmd_mutex);
-    while ((queue_size = wc->queue_size) == RRDENG_CMD_Q_MAX_SIZE) {
+    while ((queue_size = wc->queue_size) == DBENG_CMD_Q_MAX_SIZE) {
         uv_cond_wait(&wc->cmd_cond, &wc->cmd_mutex);
     }
-    fatal_assert(queue_size < RRDENG_CMD_Q_MAX_SIZE);
+    fatal_assert(queue_size < DBENG_CMD_Q_MAX_SIZE);
     /* enqueue command */
     wc->cmd_queue.cmd_array[wc->cmd_queue.tail] = *cmd;
-    wc->cmd_queue.tail = wc->cmd_queue.tail != RRDENG_CMD_Q_MAX_SIZE - 1 ?
+    wc->cmd_queue.tail = wc->cmd_queue.tail != DBENG_CMD_Q_MAX_SIZE - 1 ?
                          wc->cmd_queue.tail + 1 : 0;
     wc->queue_size = queue_size + 1;
     uv_mutex_unlock(&wc->cmd_mutex);
@@ -37,7 +35,6 @@ void mongoeng_enq_cmd(struct mongoengine_worker_config* wc, struct mongoeng_cmd 
 
 struct mongoeng_cmd mongoeng_deq_cmd(struct mongoengine_worker_config* wc)
 {
-    //info"MongoDB mongoeng_deq_cmd.");
     struct mongoeng_cmd ret;
     unsigned queue_size;
 
@@ -51,7 +48,7 @@ struct mongoeng_cmd mongoeng_deq_cmd(struct mongoengine_worker_config* wc)
         if (queue_size == 1) {
             wc->cmd_queue.head = wc->cmd_queue.tail = 0;
         } else {
-            wc->cmd_queue.head = wc->cmd_queue.head != RRDENG_CMD_Q_MAX_SIZE - 1 ?
+            wc->cmd_queue.head = wc->cmd_queue.head != DBENG_CMD_Q_MAX_SIZE - 1 ?
                                  wc->cmd_queue.head + 1 : 0;
         }
         wc->queue_size = queue_size - 1;
@@ -69,17 +66,15 @@ void mongo_async_cb(uv_async_t *handle)
 {
     uv_stop(handle->loop);
     uv_update_time(handle->loop);
-    debug(D_RRDENGINE, "%s called, active=%d.", __func__, uv_is_active((uv_handle_t *)handle));
 }
 
 
-/* Flushes dirty pages when timer expires */
+/* Queues write command when timer expires */
 #define TIMER_PERIOD_MS (1000)
 
 void mongo_timer_cb(uv_timer_t* handle)
 {
     struct mongoengine_worker_config* wc = handle->data;
-    //struct mongoengine_instance *ctx = wc->ctx;
 
     struct mongoeng_cmd write_cmd;
     write_cmd.opcode = MONGOENGINE_BULK_WRITE;
@@ -87,121 +82,180 @@ void mongo_timer_cb(uv_timer_t* handle)
 
     uv_stop(handle->loop);
     uv_update_time(handle->loop);
-    //if (unlikely(ctx->metalog_ctx && !ctx->metalog_ctx->initialized))
-    //    return; /* Wait for the metadata log to initialize */
-    //rrdeng_test_quota(wc);
-    debug(D_RRDENGINE, "%s: timeout reached.", __func__);
-    /*if (likely(!wc->now_deleting_files && !wc->now_invalidating_dirty_pages)) {
-
-    }*/
-    //info"MongoDB mongo_timer_cb.");
-   //load_configuration_dynamic();
-#ifdef NETDATA_INTERNAL_CHECKS
-    /*{
-        char buf[4096];
-        debug(D_RRDENGINE, "%s", get_rrdeng_statistics(wc->ctx, buf, sizeof(buf)));
-    }*/
-#endif
 }
 
 #define MAX_CMD_BATCH_SIZE (256)
 
-void process_metric_query(struct rrddim_query_handle *handle, struct mongoengine_instance *ctx) {
-    bson_t *filter;
-    bson_t *opts;
+void process_query_set(struct set_query *set_query) {
+    bson_t *pipeline;
     mongoc_cursor_t *cursor;
     bson_error_t error;
     const bson_t *doc;
-    bson_t *inner_doc;
-    bson_iter_t iter;
-    time_t time = 0;
-    storage_number value = 0;
-    unsigned count = 0;
-    struct mongoeng_query_handle *mongo_query_handle = (struct mongoeng_query_handle *) handle->handle;
+    bson_iter_t iter, array_iter, inner_iter;
+    time_t time;
+    storage_number value;
+    char *dim_id;
+    RRDSET *st;
+    struct mongoeng_host_data *host_data;
+    struct mongoeng_dim_data *dim_data;
+    struct mongoeng_region *current_region;
+    struct mongoeng_value *current_value;
+    unsigned interval;
 
-    filter = BCON_NEW("m.s", handle->rd->rrdset->id, 
-                        "m.d", handle->rd->id, 
-                        "t", "{",
-                            "$gte", BCON_DATE_TIME(handle->start_time * MSEC_PER_SEC),
-                            "$lte", BCON_DATE_TIME(handle->end_time * MSEC_PER_SEC),
-                        "}");
+    RRDDIM *rd = NULL;
+    unsigned region_memory_count = 256;
+    unsigned value_memory_count = 32768;
+    unsigned current_interval = 0; // also used to track if a region was found for a dimension
 
-    opts = BCON_NEW("projection", "{",
-                        "_id", BCON_BOOL(false),
-                        "t", BCON_BOOL(true),
-                        "m.v", BCON_BOOL(true),
-                    "}",
-                    "sort", "{", "t", BCON_INT32(-1), "}");
+    st = set_query->st;
+    long long start_time = set_query->start * MSEC_PER_SEC;
+    long long end_time = set_query->end * MSEC_PER_SEC;
+
+    host_data = st->rrdhost->mongoeng_data;
+    if(!host_data) {
+        error("MongoDB process_query_set failed to retrieve host data");
+        return;
+    }
+
+    struct mongoengine_instance *ctx = (struct mongoengine_instance *) st->rrdhost->rrdeng_ctx;
+    if (unlikely(!ctx)) {
+        error("MongoDB process_query_set failed to fetch context");
+        return;
+    }
+
+    pipeline = BCON_NEW("pipeline", "[", 
+                          "{", "$match", "{", 
+                            "m.s", st->id, 
+                            "t", "{",
+                              "$gte", BCON_DATE_TIME(start_time), 
+                              "$lte", BCON_DATE_TIME(end_time), 
+                            "}",
+                          "}", "}", 
+                          "{", "$sort", "{", "t", BCON_INT32(1), "}", "}",
+                          "{", "$group", "{", 
+                            "_id", "$m.d", "d", "{", "$push", "{", "r", "$m.r", "v", "$m.v", "t", "$t", "}", "}", 
+                          "}", "}", 
+                        "]");
 
     uv_mutex_lock(&ctx->client_lock);
-    cursor = mongoc_collection_find_with_opts(handle->rd->rrdset->rrdhost->collection, filter, opts, NULL);
-
+    cursor = mongoc_collection_aggregate(host_data->collection, MONGOC_QUERY_NONE, pipeline, NULL, NULL);
+    
+    // iterate each queried dimension grouping
     while (mongoc_cursor_next (cursor, &doc)) {
-        if(bson_iter_init_find(&iter, doc, "t") && BSON_ITER_HOLDS_DATE_TIME(&iter)) {
-            time = bson_iter_time_t(&iter);
-            if(bson_iter_init_find(&iter, doc, "m") && BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-                uint32_t document_len = 0;
-                const uint8_t *data = NULL;
-                bson_iter_document(&iter, &document_len, &data);
-                inner_doc = bson_new_from_data(data, document_len);
-                if(bson_iter_init_find(&iter, inner_doc, "v") && BSON_ITER_HOLDS_INT32(&iter)) {
-                    value = bson_iter_int32(&iter);
-                    count++;
-                    struct mongoeng_query_data *data = callocz(1, sizeof(struct mongoeng_query_data));
-                    data->value = value;
-                    data->time = time * USEC_PER_SEC;
-                    data->next = mongo_query_handle->data;
-                    mongo_query_handle->data = data;
-                }
-                bson_destroy (inner_doc);
+        if(bson_iter_init_find(&iter, doc, "_id") && BSON_ITER_HOLDS_UTF8(&iter)) {
+
+            // get matching dimension from set
+            dim_id = bson_iter_utf8(&iter, NULL);
+            for((rd) = (st)->dimensions; (rd) ; (rd) = (rd)->next) {
+                if(!strcmp(rd->id, dim_id))
+                    break;
             }
+
+            // extract queried dimension data
+            if(rd && !strcmp(rd->id, dim_id) && rd->state->mongoeng_data && bson_iter_find(&iter, "d") && 
+               BSON_ITER_HOLDS_ARRAY(&iter) && bson_iter_recurse(&iter, &array_iter)) {
+
+                dim_data = rd->state->mongoeng_data;
+                uv_mutex_lock(&dim_data->regions_lock);
+                dim_data->regions = callocz(region_memory_count, sizeof(struct mongoeng_region));
+
+                // iterate dimension data 
+                while(bson_iter_next(&array_iter) && BSON_ITER_HOLDS_DOCUMENT(&array_iter) && 
+                      bson_iter_recurse(&array_iter, &inner_iter)) {
+                    
+                    if(bson_iter_find(&inner_iter, "r") && BSON_ITER_HOLDS_INT32(&inner_iter)) {
+                        // check collection interval and create a new region if it differs from the previous
+                        interval = bson_iter_int32(&inner_iter);
+                        if(current_interval != interval) {
+                            if(++dim_data->region_count > region_memory_count) {
+                                region_memory_count *= 2;
+                                dim_data->regions = reallocz(dim_data->regions, 
+                                                             sizeof(struct mongoeng_region) * region_memory_count);
+                            }
+                            // resize the previous region's values (if this is not the first)
+                            if(current_interval) {
+                                current_region->values = 
+                                                reallocz(current_region->values, 
+                                                         sizeof(struct mongoeng_value) * current_region->value_count);
+                            }
+                            value_memory_count = 32768;
+                            current_interval = interval;
+                            current_region = &dim_data->regions[dim_data->region_count - 1];
+                            current_region->interval = interval;
+                            current_region->value_count = 0;
+                            current_region->values = callocz(value_memory_count, sizeof(struct mongoeng_value));
+                        }
+                    }
+
+                    if(current_interval && bson_iter_find(&inner_iter, "v") && 
+                       BSON_ITER_HOLDS_INT32(&inner_iter)) {
+
+                        value = bson_iter_int32(&inner_iter);
+                        if(bson_iter_find(&inner_iter, "t") && BSON_ITER_HOLDS_DATE_TIME(&inner_iter)) {
+                            time = bson_iter_time_t(&inner_iter);
+                            if(++current_region->value_count > value_memory_count) {
+                                value_memory_count *= 2;
+                                current_region->values = reallocz(current_region->values, 
+                                                                  sizeof(struct mongoeng_value) * value_memory_count);
+                            }
+                            current_value = &current_region->values[current_region->value_count - 1];
+                            current_value->v = value;
+                            current_value->t = time * USEC_PER_SEC;
+                        }
+                    }
+                }
+                // resize the last region's values and the regions for this dimension if any region was found
+                if(current_interval) {
+                    current_region->values = reallocz(current_region->values, 
+                                                      sizeof(struct mongoeng_value) * current_region->value_count);
+                    dim_data->regions = reallocz(dim_data->regions, 
+                                                 sizeof(struct mongoeng_region) * dim_data->region_count);
+                }
+                uv_mutex_unlock(&dim_data->regions_lock);
+            }
+            rd = NULL;
+            region_memory_count = 256;
+            value_memory_count = 32768;
+            current_interval = 0;
         }
     }
     if (mongoc_cursor_error (cursor, &error)) {
-        error("MongoDB process_metric_query ERROR %s\n", error.message);
+        error("MongoDB process_query_set ERROR %s\n", error.message);
     }
     uv_mutex_unlock(&ctx->client_lock);
 
-    mongo_query_handle->count = count;
-
     mongoc_cursor_destroy (cursor);
-    bson_destroy (opts);
-    bson_destroy (filter);
+    bson_destroy (pipeline);
 }
 
 void process_bulk_write(struct mongoengine_instance *ctx) {
-    uv_mutex_lock(&ctx->client_lock);
-    uv_mutex_lock(&ctx->bulk_write_lock);
-    rrd_rdlock();
-
     RRDHOST *host;
-    char *str;
     bson_t reply;
     bson_error_t error;
-    int ret = 0;
+    struct mongoeng_host_data *mongoeng_data;
+
+    uv_mutex_lock(&ctx->client_lock);
+    rrd_rdlock();
 
     rrdhost_foreach_read(host) {
-        if(host->collection) {
-            if(host->op) {
-                ret = mongoc_bulk_operation_execute (host->op, &reply, &error);
-                str = bson_as_canonical_extended_json (&reply, NULL);
-                //info ("%s\n", str);
-                bson_free (str);
+        mongoeng_data = host->mongoeng_data;
+        if(mongoeng_data && mongoeng_data->collection) {
+            uv_mutex_lock(&mongoeng_data->bulk_write_lock);
+            if(mongoeng_data->op) {
+                mongoc_bulk_operation_execute (mongoeng_data->op, &reply, &error);
                 bson_destroy (&reply);
-                mongoc_bulk_operation_destroy (host->op);
+                mongoc_bulk_operation_destroy (mongoeng_data->op);
             }                
-            host->op = mongoc_collection_create_bulk_operation_with_opts (host->collection, NULL);
+            mongoeng_data->op = mongoc_collection_create_bulk_operation_with_opts (mongoeng_data->collection, NULL);
+            uv_mutex_unlock(&mongoeng_data->bulk_write_lock);
         }
     }
 
     rrd_unlock();
-    uv_mutex_unlock(&ctx->bulk_write_lock);
     uv_mutex_unlock(&ctx->client_lock);
 }
 
-time_t query_time(RRDDIM *rd, int sort) {
-    struct mongoeng_collect_handle *handle;
-    struct mongoengine_instance *ctx;
+time_t query_time(RRDDIM *rd, struct mongoeng_host_data *mongoeng_data, int sort) {
     bson_t *filter;
     bson_t *opts;
     mongoc_cursor_t *cursor;
@@ -210,8 +264,12 @@ time_t query_time(RRDDIM *rd, int sort) {
     bson_iter_t iter;
     time_t time = 0;
 
-    handle = (struct mongoeng_collect_handle *)rd->state->handle;
-    ctx = handle->ctx;
+    struct mongoengine_instance *ctx = (struct mongoengine_instance *) rd->rrdset->rrdhost->rrdeng_ctx;
+    if (unlikely(!ctx)) {
+        error("MongoDB query_time failed to fetch context");
+        return time;
+    }
+
     filter = BCON_NEW("m.s", rd->rrdset->id, "m.d", rd->id);
     opts = BCON_NEW("projection", "{",
                         "_id", BCON_BOOL(false),
@@ -221,7 +279,7 @@ time_t query_time(RRDDIM *rd, int sort) {
                     "limit", BCON_INT64(1));
 
     uv_mutex_lock(&ctx->client_lock);
-    cursor = mongoc_collection_find_with_opts(rd->rrdset->rrdhost->collection, filter, opts, NULL);
+    cursor = mongoc_collection_find_with_opts(mongoeng_data->collection, filter, opts, NULL);
     if (mongoc_cursor_next (cursor, &doc)) {
         if(bson_iter_init_find(&iter, doc, "t") && BSON_ITER_HOLDS_DATE_TIME(&iter)) {
             time = bson_iter_time_t(&iter);
@@ -240,24 +298,52 @@ time_t query_time(RRDDIM *rd, int sort) {
 }
 
 void process_query_latest(RRDDIM *rd) {
-    rd->state->latest_time = query_time(rd, -1);
+    struct mongoeng_dim_data *dim_data;
+    struct mongoeng_host_data *host_data;
+
+    dim_data = rd->state->mongoeng_data;
+    if(!dim_data) {
+        error("MongoDB process_query_latest failed to retrieve dim data");
+        return;
+    }
+
+    host_data = rd->rrdset->rrdhost->mongoeng_data;
+    if(!host_data) {
+        error("MongoDB process_query_latest failed to retrieve host data");
+        return;
+    }
+    dim_data->latest_time = query_time(rd, host_data, -1);
 }
 
 void process_query_oldest(RRDDIM *rd) {
-    rd->state->oldest_time = query_time(rd, 1);
+    struct mongoeng_dim_data *dim_data;
+    struct mongoeng_host_data *host_data;
+
+    dim_data = rd->state->mongoeng_data;
+    if(!dim_data) {
+        error("MongoDB process_query_oldest failed to retrieve dim data");
+        return;
+    }
+
+    host_data = rd->rrdset->rrdhost->mongoeng_data;
+    if(!host_data) {
+        error("MongoDB process_query_oldest failed to retrieve host data");
+        return;
+    }
+    dim_data->oldest_time = query_time(rd, host_data, 1);
 }
 
 void mongoeng_worker(void* arg)
 {
-    //info"MongoDB mongoeng_worker.");
-    struct mongoengine_worker_config* wc = arg;
-    struct mongoengine_instance *ctx = wc->ctx;
     uv_loop_t* loop;
     int shutdown, ret;
     enum mongoengine_opcode opcode;
     uv_timer_t timer_req;
     struct mongoeng_cmd cmd;
     unsigned cmd_batch_size;
+    
+    struct mongoengine_worker_config* wc = arg;
+    struct mongoengine_instance *ctx = wc->ctx;
 
     mongoeng_init_cmd_queue(wc);
 
@@ -276,14 +362,7 @@ void mongoeng_worker(void* arg)
     }
     wc->async.data = wc;
 
-    wc->now_deleting_files = NULL;
-    wc->cleanup_thread_deleting_files = 0;
-
-    wc->now_invalidating_dirty_pages = NULL;
-    wc->cleanup_thread_invalidating_dirty_pages = 0;
-    wc->inflight_dirty_pages = 0;
-
-    /* dirty page flushing timer */
+    /* bulk write timer */
     ret = uv_timer_init(loop, &timer_req);
     if (ret) {
         error("uv_timer_init(): %s", uv_strerror(ret));
@@ -299,7 +378,6 @@ void mongoeng_worker(void* arg)
     shutdown = 0;
     while (likely(shutdown == 0)) {
         uv_run(loop, UV_RUN_DEFAULT);
-        //mongoeng_cleanup_finished_threads(wc);
 
         /* wait for commands */
         cmd_batch_size = 0;
@@ -312,7 +390,6 @@ void mongoeng_worker(void* arg)
                 break;
 
             cmd = mongoeng_deq_cmd(wc);
-            //info"MongoDB mongoeng_deq_cmd -> %u.", cmd.opcode);
             opcode = cmd.opcode;
             ++cmd_batch_size;
 
@@ -324,21 +401,14 @@ void mongoeng_worker(void* arg)
                 shutdown = 1;
                 break;
             case MONGOENGINE_QUIESCE:
-                //ctx->drop_metrics_under_page_cache_pressure = 0;
                 ctx->quiesce = SET_QUIESCE;
                 fatal_assert(0 == uv_timer_stop(&timer_req));
                 uv_close((uv_handle_t *)&timer_req, NULL);
-                //while (do_flush_pages(wc, 1, NULL)) {
-                //    ; /* Force flushing of all committed pages. */
-                //}
-                //wal_flush_transaction_buffer(wc);
-                //if (!mongoeng_threads_alive(wc)) {
-                    ctx->quiesce = QUIESCED;
-                    completion_mark_complete(&ctx->mongoeng_completion);
-                //}
+                ctx->quiesce = QUIESCED;
+                completion_mark_complete(&ctx->mongoeng_completion);
                 break;
-            case MONGOENGINE_QUERY_METRIC:
-                process_metric_query(cmd.handle, ctx);
+            case MONGOENGINE_QUERY_SET:
+                process_query_set(cmd.set_query);
                 completion_mark_complete(cmd.completion);
                 break;
             case MONGOENGINE_QUERY_TIME_LATEST:
@@ -352,8 +422,9 @@ void mongoeng_worker(void* arg)
             case MONGOENGINE_BULK_WRITE:
                 process_bulk_write(ctx);
                 break;    
+            case MONGOENGINE_TEST:
+                completion_mark_complete(cmd.completion);
             default:
-                debug(D_RRDENGINE, "%s: default.", __func__);
                 break;
             }
         } while (opcode != MONGOENGINE_NOOP);
@@ -369,10 +440,6 @@ void mongoeng_worker(void* arg)
      */
     uv_close((uv_handle_t *)&wc->async, NULL);
 
-    //while (do_flush_pages(wc, 1, NULL)) {
-    //    ; /* Force flushing of all committed pages. */
-    //}
-    //wal_flush_transaction_buffer(wc);
     uv_run(loop, UV_RUN_DEFAULT);
 
     info("Shutting down MongoDB engine event loop complete.");
